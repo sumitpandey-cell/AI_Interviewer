@@ -29,6 +29,30 @@ class Settings(BaseSettings):
     GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
     GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     
+    # External API Keys
+    SPEECH_API_KEY: str = os.getenv("SPEECH_API_KEY", "")
+    AZURE_FACE_API_KEY: str = os.getenv("AZURE_FACE_API_KEY", "")
+    AZURE_FACE_ENDPOINT: str = os.getenv("AZURE_FACE_ENDPOINT", "")
+    
+    # AWS Storage
+    AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "ai-interviewer-media")
+    AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
+    
+    # Email/SMS Configuration
+    SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    EMAIL_USER: str = os.getenv("EMAIL_USER", "")
+    EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "")
+    FROM_EMAIL: str = os.getenv("FROM_EMAIL", "")
+    ADMIN_EMAILS: List[str] = os.getenv("ADMIN_EMAILS", "").split(",") if os.getenv("ADMIN_EMAILS") else []
+    
+    # Twilio SMS
+    TWILIO_SID: str = os.getenv("TWILIO_SID", "")
+    TWILIO_TOKEN: str = os.getenv("TWILIO_TOKEN", "")
+    TWILIO_PHONE: str = os.getenv("TWILIO_PHONE", "")
+    
     # Other settings
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     
