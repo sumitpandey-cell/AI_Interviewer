@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+
+google_TTS.json
+
+# Environment variables
+ai_interviewer/.env
+ai_interviewer/ai_interviewer.db

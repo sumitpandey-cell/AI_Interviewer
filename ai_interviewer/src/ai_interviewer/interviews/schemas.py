@@ -1,0 +1,256 @@
+"""
+Pydantic models for interviews
+"""
+
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from pydantic import BaseModel
+
+
+class InterviewBase(BaseModel):
+    """Base interview schema."""
+    title: str
+    description: Optional[str] = None
+    position: str
+    company: Optional[str] = None
+    interview_type: str = "technical"  # technical, behavioral, mixed
+    duration_minutes: int = 60
+
+
+class InterviewCreate(BaseModel):
+    """Interview creation schema."""
+    title: str
+    description: Optional[str] = None
+    position: str
+    company: Optional[str] = None
+    interview_type: str = "technical"
+    duration_minutes: int = 60
+
+
+class InterviewResponse(BaseModel):
+    """Interview response schema."""
+    id: int
+    user_id: int
+    title: str
+    position: str
+    company: Optional[str] = None
+    interview_type: str
+    status: str
+    duration_minutes: int
+    score: Optional[float] = None
+    feedback: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class LangGraphState(BaseModel):
+    """LangGraph workflow state schema."""
+    interview_id: int
+    session_token: str
+    current_step: str
+    user_id: int
+    
+    # Interview context
+    interview_type: str
+    position: str
+    difficulty: str = "medium"
+    questions_generated: List[Dict[str, Any]] = []
+    current_question_index: int = 0
+    
+    # Current question context
+    current_question: Optional[Dict[str, Any]] = None
+    user_response: Optional[str] = None
+    audio_url: Optional[str] = None
+    audio_data: Optional[bytes] = None  # Direct audio data (bytes)
+    audio_format: Optional[str] = None  # Audio format (webm, mp3, wav, etc.)
+    
+    # AI Processing
+    ai_evaluation: Optional[Dict[str, Any]] = None
+    next_question: Optional[Dict[str, Any]] = None
+    
+    # Session metadata
+    start_time: Optional[datetime] = None
+    responses_history: List[Dict[str, Any]] = []
+    total_score: float = 0.0
+    
+    # Flow control
+    should_continue: bool = True
+    error_message: Optional[str] = None
+    
+    # Additional workflow attributes
+    session_valid: Optional[bool] = None
+    speech_analysis: Optional[Dict[str, Any]] = None
+    emotion_analysis: Optional[Dict[str, Any]] = None
+    warning_message: Optional[str] = None
+    depth_analysis: Optional[Dict[str, Any]] = None
+    behavioral_analysis: Optional[Dict[str, Any]] = None
+    follow_up_question: Optional[Dict[str, Any]] = None
+    adjustment_message: Optional[str] = None
+    current_average_score: Optional[float] = None
+    termination_reason: Optional[str] = None
+    is_follow_up: Optional[bool] = None
+    final_assessment: Optional[Dict[str, Any]] = None
+    interview_duration: Optional[float] = None
+    interview_report: Optional[Dict[str, Any]] = None
+    completed_at: Optional[datetime] = None
+    interview_insights: Optional[Dict[str, Any]] = None
+    feedback_generated: Optional[bool] = None
+    encouragement_message: Optional[str] = None
+    manual_feedback: Optional[str] = None
+    
+    class Config:
+        extra = "allow"  # Allow additional attributes to be set dynamically
+
+
+class InterviewSessionCreate(BaseModel):
+    """Interview session creation schema."""
+    interview_id: int
+
+
+class InterviewSessionResponse(BaseModel):
+    """Interview session response schema."""
+    id: int
+    interview_id: int
+    session_token: str
+    is_active: bool
+    session_status: str
+    current_step: Optional[str] = None
+    current_question_id: Optional[int] = None
+    created_at: datetime
+    last_activity_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class EvaluationResponse(BaseModel):
+    """Response schema for AI evaluation."""
+    score: float
+    feedback: str
+    detailed_analysis: Dict[str, Any]
+    improvement_suggestions: List[str]
+
+
+class InterviewStartRequest(BaseModel):
+    """Request to start an interview."""
+    interview_id: int
+
+
+class InterviewStartResponse(BaseModel):
+    """Response when starting an interview."""
+    session_token: str
+    first_question: Dict[str, Any]
+    workflow_state: LangGraphState
+
+
+class SubmitResponseRequest(BaseModel):
+    """Request to submit an interview response."""
+    session_token: str
+    response_text: Optional[str] = None
+    audio_file_url: Optional[str] = None
+
+
+class SubmitResponseResponse(BaseModel):
+    """Response after submitting an interview response."""
+    evaluation: EvaluationResponse
+    next_question: Optional[Dict[str, Any]] = None
+    is_completed: bool = False
+    workflow_state: LangGraphState
+
+
+class CompleteResponseRequest(BaseModel):
+    """Request to process a complete response through full workflow."""
+    response_text: Optional[str] = None
+    audio_file_url: Optional[str] = None
+    include_analysis: bool = True
+    include_insights: bool = True
+
+
+class SessionValidationResponse(BaseModel):
+    """Response for session validation."""
+    session_token: str
+    is_valid: bool
+    prerequisites_met: bool
+    current_step: str
+    error_message: Optional[str] = None
+    validation_details: Dict[str, Any]
+
+
+class CompleteResponseResult(BaseModel):
+    """Complete response processing result."""
+    session_token: str
+    evaluation: Dict[str, Any]
+    speech_analysis: Optional[Dict[str, Any]] = None
+    emotion_analysis: Optional[Dict[str, Any]] = None
+    depth_analysis: Optional[Dict[str, Any]] = None
+    behavioral_analysis: Optional[Dict[str, Any]] = None
+    follow_up_question: Optional[Dict[str, Any]] = None
+    current_score: float
+    difficulty_adjustment: Optional[str] = None
+    next_question: Optional[Dict[str, Any]] = None
+    is_completed: bool = False
+    termination_reason: Optional[str] = None
+    final_assessment: Optional[Dict[str, Any]] = None
+    interview_report: Optional[Dict[str, Any]] = None
+    interview_insights: Optional[Dict[str, Any]] = None
+    encouragement: Optional[str] = None
+    workflow_state: Dict[str, Any]
+
+
+class SessionAnalysisResponse(BaseModel):
+    """Session analysis response."""
+    session_token: str
+    session_status: str
+    current_step: str
+    performance_summary: Dict[str, Any]
+    response_history: List[Dict[str, Any]]
+    speech_quality_metrics: List[Dict[str, Any]]
+    emotion_patterns: List[Dict[str, Any]]
+    insights: Optional[Dict[str, Any]] = None
+
+
+class EarlyTerminationRequest(BaseModel):
+    """Request to terminate interview early."""
+    reason: str
+    feedback: Optional[str] = None
+
+
+class EarlyTerminationResponse(BaseModel):
+    """Response for early termination."""
+    session_token: str
+    message: str
+    termination_reason: str
+    final_assessment: Optional[Dict[str, Any]] = None
+    interview_report: Optional[Dict[str, Any]] = None
+
+
+class DemoWorkflowRequest(BaseModel):
+    """Request schema for demo workflow."""
+    interview_id: Optional[int] = None
+    interview_type: str = "technical"
+    position: str = "Software Engineer"
+    difficulty: str = "medium"
+    sample_response: Optional[str] = None
+    audio_url: Optional[str] = None
+
+
+class DemoWorkflowResponse(BaseModel):
+    """Response schema for demo workflow."""
+    demo_session_token: str
+    workflow_completion: str
+    total_steps: int
+    workflow_log: List[Dict[str, Any]]
+    current_state: Dict[str, Any]
+    evaluation_results: Optional[Dict[str, Any]] = None
+    speech_analysis: Optional[Dict[str, Any]] = None
+    emotion_analysis: Optional[Dict[str, Any]] = None
+    depth_analysis: Optional[Dict[str, Any]] = None
+    follow_up_question: Optional[Dict[str, Any]] = None
+    final_assessment: Optional[Dict[str, Any]] = None
+    interview_insights: Optional[Dict[str, Any]] = None
+    next_question: Optional[Dict[str, Any]] = None
+    workflow_summary: Dict[str, Any]
