@@ -3,16 +3,50 @@ Interview management API routes
 """
 
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from datetime import datetime, timezone, timezone
+from datetime import datetime
 
 from . import schemas, models
 from .service import InterviewService
 from ..database.session import get_db
 from ..auth.dependencies import get_current_active_user
 from ..auth.models import User
+
+
+def safe_restore_state(state_dict):
+    """Safely restore LangGraphState from database, cleaning any problematic data."""
+    # Remove any fields that could cause serialization issues
+    clean_dict = state_dict.copy() if state_dict else {}
+    
+    # Remove binary data fields that shouldn't be in the database but might be there
+    binary_fields = {'audio_data', 'video_data', 'temp_data'}
+    for field in binary_fields:
+        if field in clean_dict:
+            del clean_dict[field]
+    
+    # Convert any string representations of binary data back to None
+    for key, value in clean_dict.items():
+        if isinstance(value, str) and value.startswith('<binary_data:'):
+            clean_dict[key] = None
+        elif isinstance(value, str) and value.startswith('<audio_bytes:'):
+            clean_dict[key] = None
+    
+    try:
+        from .schemas import LangGraphState
+        return LangGraphState(**clean_dict)
+    except Exception as e:
+        print(f"Warning: Failed to restore state, using minimal state: {e}")
+        # Return a minimal valid state if restoration fails
+        return LangGraphState(
+            interview_id=clean_dict.get('interview_id', 1),
+            session_token=clean_dict.get('session_token', 'unknown'),
+            current_step=clean_dict.get('current_step', 'initialize'),
+            user_id=clean_dict.get('user_id', 1),
+            interview_type=clean_dict.get('interview_type', 'technical'),
+            position=clean_dict.get('position', 'Software Engineer')
+        )
 
 
 router = APIRouter()
@@ -81,7 +115,7 @@ async def submit_response(
     result = await service.submit_response(
         session_token=request.session_token,
         response_text=request.response_text,
-        audio_file_url=request.audio_file_url
+        audio_data=request.audio_data
     )
     
     return schemas.SubmitResponseResponse(
@@ -112,115 +146,6 @@ async def get_interview_results(
     """Get the final results of a completed interview."""
     service = InterviewService(db)
     return service.get_interview_results(interview_id, current_user.id)
-
-
-# Audio/Video endpoints for real-time processing
-@router.post("/session/{session_token}/upload-audio")
-async def upload_audio(
-    session_token: str,
-    audio_file: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """Upload audio response for processing."""
-    from ..storage.service import storage_service
-    
-    # Validate session
-    service = InterviewService(db)
-    session = db.query(models.InterviewSession).filter(
-        models.InterviewSession.session_token == session_token,
-        models.InterviewSession.is_active == True
-    ).first()
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found or inactive")
-    
-    # Validate file type
-    if not audio_file.content_type or not audio_file.content_type.startswith('audio/'):
-        raise HTTPException(status_code=400, detail="File must be an audio file")
-    
-    try:
-        # Upload file to storage
-        file_url = await storage_service.upload_audio_file(
-            file_data=audio_file.file,
-            filename=audio_file.filename or "audio_file.wav"
-        )
-        
-        # Create audio file record
-        audio_record = models.AudioVideoFile(
-            interview_id=session.interview_id,
-            file_type="audio",
-            gcs_url=file_url,
-            file_format=audio_file.filename.split('.')[-1] if audio_file.filename else 'unknown',
-            upload_status="completed"
-        )
-        
-        db.add(audio_record)
-        db.commit()
-        db.refresh(audio_record)
-        
-        return {
-            "file_id": audio_record.id,
-            "file_url": file_url,
-            "session_token": session_token,
-            "message": "Audio file uploaded successfully"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload audio: {str(e)}")
-
-
-@router.post("/session/{session_token}/transcribe")
-async def transcribe_audio(
-    session_token: str,
-    audio_url: str,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """Transcribe audio response."""
-    from ..ai.service import ai_service
-    
-    # Validate session
-    session = db.query(models.InterviewSession).filter(
-        models.InterviewSession.session_token == session_token,
-        models.InterviewSession.is_active == True
-    ).first()
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found or inactive")
-    
-    try:
-        # Transcribe audio using AI service
-        transcript = await ai_service.transcribe_audio(audio_url)
-        
-        # Update the audio record with transcription
-        audio_record = db.query(models.AudioVideoFile).filter(
-            models.AudioVideoFile.gcs_url == audio_url
-        ).first()
-        
-        if audio_record:
-            audio_record.transcription_text = transcript
-            audio_record.transcription_status = "completed"
-            db.commit()
-        
-        return {
-            "session_token": session_token,
-            "audio_url": audio_url,
-            "transcript": transcript,
-            "message": "Audio transcribed successfully"
-        }
-        
-    except Exception as e:
-        # Update transcription status to failed
-        audio_record = db.query(models.AudioVideoFile).filter(
-            models.AudioVideoFile.gcs_url == audio_url
-        ).first()
-        
-        if audio_record:
-            audio_record.transcription_status = "failed"
-            db.commit()
-        
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 
 # Workflow control endpoints
@@ -331,20 +256,20 @@ async def validate_session(
         
         # Get current state
         state_dict = session.workflow_state or {}
-        state = LangGraphState(**state_dict)
+        state = safe_restore_state(state_dict)
         
         # Run validation steps
         state = await interview_workflow.validate_session(state)
         state = await interview_workflow.check_interview_prerequisites(state)
         
         # Update session
-        session.workflow_state = state.dict()
+        session.workflow_state = state.model_dump()
         session.current_step = state.current_step
         db.commit()
         
         return {
             "session_token": session_token,
-            "is_valid": state.get("session_valid", True) and state.should_continue,
+            "is_valid": getattr(state, 'session_valid', True) and state.should_continue,
             "prerequisites_met": not bool(state.error_message),
             "current_step": state.current_step,
             "error_message": state.error_message,
@@ -384,14 +309,14 @@ async def process_complete_response(
         
         # Get current state
         state_dict = session.workflow_state or {}
-        state = LangGraphState(**state_dict)
+        state = safe_restore_state(state_dict)
         
         # Update state with response data
         state.user_response = request.response_text
-        state.audio_url = request.audio_file_url
+        state.audio_data = request.audio_data
         
         # Run complete workflow for response processing
-        if request.audio_file_url:
+        if request.audio_data:
             state = await interview_workflow.process_audio(state)
         
         state = await interview_workflow.validate_response(state)
@@ -420,7 +345,7 @@ async def process_complete_response(
             session.session_status = "completed"
         
         # Update session
-        session.workflow_state = state.dict()
+        session.workflow_state = state.model_dump()
         session.current_step = state.current_step
         session.last_activity_at = func.now()
         db.commit()
@@ -477,7 +402,7 @@ async def get_session_analysis(
         
         # Get current state
         state_dict = session.workflow_state or {}
-        state = LangGraphState(**state_dict)
+        state = safe_restore_state(state_dict)
         
         # Calculate performance metrics
         response_scores = [r.get("evaluation", {}).get("overall_score", 0) for r in state.responses_history]
@@ -552,7 +477,7 @@ async def trigger_early_termination(
         
         # Get current state
         state_dict = session.workflow_state or {}
-        state = LangGraphState(**state_dict)
+        state = safe_restore_state(state_dict)
         
         # Set termination
         state.should_continue = False
@@ -570,9 +495,9 @@ async def trigger_early_termination(
         
         session.is_active = False
         session.session_status = "completed"
-        session.workflow_state = state.dict()
+        session.workflow_state = state.model_dump()
         
-        db.commit()
+        db.commit();
         
         return {
             "session_token": session_token,
@@ -648,15 +573,15 @@ async def demo_complete_workflow(
         
         # Simulate response processing for demo
         demo_state.user_response = demo_request.sample_response or "This is a sample response demonstrating my experience with the technology."
-        demo_state.audio_url = demo_request.audio_url
+        demo_state.audio_data = demo_request.audio_data
         
         # 5. Audio Processing (if provided)
-        if demo_state.audio_url:
+        if demo_state.audio_data:
             demo_state = await interview_workflow.process_audio(demo_state)
             workflow_log.append({
                 "step": "audio_processing",
                 "status": "completed",
-                "details": f"Speech analysis: {demo_state.speech_analysis.get('overall_speech_score', 0)}/10"
+                "details": f"Speech analysis: {demo_state.speech_analysis.get('overall_speech_score', 0) if demo_state.speech_analysis else 0}/10"
             })
         
         # 6. Response Validation
@@ -785,19 +710,3 @@ async def demo_complete_workflow(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Demo workflow failed: {str(e)}")
-
-
-# DEPRECATED: LangGraph integration is deprecated
-@router.post("/demo/langgraph-interview")
-async def demo_langgraph_interview(
-    topic: str = "Software Engineer",
-    time_limit: float = 5.0,  # 5 minutes for demo
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """DEPRECATED: LangGraph interview workflow is deprecated. Use main workflow instead."""
-    return {
-        "error": "This endpoint is deprecated. Use the main interview workflow instead.",
-        "deprecated": True,
-        "alternative": "Use /interviews/start and /interviews/submit-response endpoints"
-    }

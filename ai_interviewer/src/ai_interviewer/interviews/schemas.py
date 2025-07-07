@@ -2,7 +2,7 @@
 Pydantic models for interviews
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 from pydantic import BaseModel
 
@@ -64,9 +64,10 @@ class LangGraphState(BaseModel):
     # Current question context
     current_question: Optional[Dict[str, Any]] = None
     user_response: Optional[str] = None
-    audio_url: Optional[str] = None
     audio_data: Optional[bytes] = None  # Direct audio data (bytes)
     audio_format: Optional[str] = None  # Audio format (webm, mp3, wav, etc.)
+    audio_metadata: Optional[Dict[str, Any]] = None  # Metadata from audio processing
+    audio_processing_metrics: Optional[Dict[str, Any]] = None  # Metrics from audio processing
     
     # AI Processing
     ai_evaluation: Optional[Dict[str, Any]] = None
@@ -151,7 +152,7 @@ class SubmitResponseRequest(BaseModel):
     """Request to submit an interview response."""
     session_token: str
     response_text: Optional[str] = None
-    audio_file_url: Optional[str] = None
+    audio_data: Optional[Union[bytes, str]] = None  # Direct audio stream data or base64 encoded
 
 
 class SubmitResponseResponse(BaseModel):
@@ -165,7 +166,7 @@ class SubmitResponseResponse(BaseModel):
 class CompleteResponseRequest(BaseModel):
     """Request to process a complete response through full workflow."""
     response_text: Optional[str] = None
-    audio_file_url: Optional[str] = None
+    audio_data: Optional[bytes] = None  # Direct audio stream data
     include_analysis: bool = True
     include_insights: bool = True
 
@@ -235,7 +236,7 @@ class DemoWorkflowRequest(BaseModel):
     position: str = "Software Engineer"
     difficulty: str = "medium"
     sample_response: Optional[str] = None
-    audio_url: Optional[str] = None
+    audio_data: Optional[bytes] = None  # Direct audio stream data
 
 
 class DemoWorkflowResponse(BaseModel):

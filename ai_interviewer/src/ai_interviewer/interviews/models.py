@@ -119,38 +119,7 @@ class InterviewSession(Base):
     current_question = relationship("InterviewQuestion", foreign_keys=[current_question_id])
 
 
-class AudioVideoFile(Base):
-    """Model for storing audio/video files metadata."""
-    
-    __tablename__ = "audio_video_files"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False)
-    question_id = Column(Integer, ForeignKey("interview_questions.id"))
-    
-    # File information
-    file_type = Column(String, nullable=False)  # audio, video
-    file_format = Column(String)  # mp3, wav, mp4, etc.
-    file_size_bytes = Column(Integer)
-    duration_seconds = Column(Float)
-    
-    # Google Cloud Storage information
-    gcs_bucket = Column(String)
-    gcs_object_path = Column(String)
-    gcs_url = Column(String)
-    
-    # Processing status
-    upload_status = Column(String, default="pending")  # pending, uploading, completed, failed
-    transcription_status = Column(String, default="pending")  # pending, processing, completed, failed
-    transcription_text = Column(Text)
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    # Relationships
-    interview = relationship("Interview")
-    question = relationship("InterviewQuestion")
+# Removed AudioVideoFile model and all related code for real-time streaming only
 
 # Add relationship to User model (this would typically be in auth/models.py)
 # User.interviews = relationship("Interview", back_populates="user")

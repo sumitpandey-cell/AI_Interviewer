@@ -72,10 +72,9 @@ class AuthService:
         if payload is None:
             return None
         
-        email: str = payload.get("sub")
+        email: str = payload.get("email")
         if email is None:
             return None
-        
         user = self.db.query(User).filter(User.email == email).first()
         return user
     

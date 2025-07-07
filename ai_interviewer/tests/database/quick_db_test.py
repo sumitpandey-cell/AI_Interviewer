@@ -7,11 +7,11 @@ import sys
 from pathlib import Path
 
 # Add the src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 try:
-    from ...src.ai_interviewer.database import engine
-    from ...src.ai_interviewer.config import settings
+    from ai_interviewer.database import engine
+    from ai_interviewer.config import settings
     from sqlalchemy import text
     
     print(f"Database URL: {settings.DATABASE_URL}")

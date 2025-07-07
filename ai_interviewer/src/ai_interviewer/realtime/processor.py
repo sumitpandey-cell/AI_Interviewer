@@ -7,7 +7,6 @@ import logging
 from typing import Dict, Any
 from ..websocket.manager import websocket_manager
 from ..external_apis.speech_service import SpeechService
-from ..external_apis.storage_service import StorageService
 from ..external_apis.video_analysis import VideoAnalysisService
 from ..external_apis.notification_service import NotificationService
 
@@ -15,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 # Initialize external services
 speech_service = SpeechService()
-storage_service = StorageService()
 video_service = VideoAnalysisService()
 notification_service = NotificationService()
 
@@ -36,17 +34,13 @@ class RealTimeInterviewProcessor:
                 {"message": "Processing audio stream..."}
             )
             
-            # Store audio file
-            audio_url = await storage_service.upload_audio_file(audio_data, session_token, "webm")
-            
-            # Analyze speech quality in real-time
+            # Analyze speech quality in real-time (no file storage)
             speech_analysis = await speech_service.analyze_speech_quality(audio_data)
             
             # Send speech analysis via WebSocket
             await websocket_manager.send_personal_message(session_token, {
                 "type": "speech_analysis_update",
-                "analysis": speech_analysis,
-                "audio_url": audio_url
+                "analysis": speech_analysis
             })
             
             if is_final:
@@ -62,7 +56,6 @@ class RealTimeInterviewProcessor:
                 })
             
             return {
-                "audio_url": audio_url,
                 "speech_analysis": speech_analysis,
                 "status": "processed"
             }
@@ -82,10 +75,7 @@ class RealTimeInterviewProcessor:
                 "message": "Analyzing facial expressions and body language..."
             })
             
-            # Store video file
-            video_url = await storage_service.upload_video_file(video_data, session_token, "webm")
-            
-            # Perform video analysis
+            # Perform video analysis (no file storage, direct stream processing)
             facial_emotions = await video_service.analyze_facial_emotions(video_data)
             eye_contact = await video_service.analyze_eye_contact(video_data)
             body_language = await video_service.analyze_body_language(video_data)
@@ -97,12 +87,10 @@ class RealTimeInterviewProcessor:
                 "facial_emotions": facial_emotions,
                 "eye_contact": eye_contact,
                 "body_language": body_language,
-                "engagement": engagement,
-                "video_url": video_url
+                "engagement": engagement
             })
             
             return {
-                "video_url": video_url,
                 "facial_emotions": facial_emotions,
                 "eye_contact": eye_contact,
                 "body_language": body_language,

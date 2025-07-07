@@ -104,12 +104,23 @@ class InterviewWorkflow:
         state.current_step = "process_audio"
         
         try:
-            # Handle direct audio data (preferred method)
+            # Process audio data if available
             if state.audio_data:
-                # Transcribe audio data directly
+                # Audio has already been processed by the audio_processing utility
+                # The audio_data is now normalized to 16kHz mono WAV format
+                # and the format is stored in state.audio_format
+                
+                # Get audio format from metadata or fallback to default
+                audio_format = (
+                    state.audio_metadata.get("detected_format") 
+                    if hasattr(state, "audio_metadata") and state.audio_metadata
+                    else (state.audio_format or "wav")
+                )
+                
+                # Transcribe normalized audio data
                 transcript = await ai_service.transcribe_audio_data(
                     audio_data=state.audio_data,
-                    audio_format=state.audio_format or "webm"
+                    audio_format=audio_format
                 )
                 state.user_response = transcript
                 
@@ -117,7 +128,7 @@ class InterviewWorkflow:
                 speech_analysis = await ai_service.analyze_speech_quality_data(
                     audio_data=state.audio_data,
                     transcript=transcript,
-                    audio_format=state.audio_format or "webm"
+                    audio_format=audio_format
                 )
                 state.speech_analysis = speech_analysis
                 
@@ -125,26 +136,24 @@ class InterviewWorkflow:
                 emotion_analysis = await ai_service.detect_emotions_data(
                     audio_data=state.audio_data,
                     transcript=transcript,
-                    audio_format=state.audio_format or "webm"
+                    audio_format=audio_format
                 )
                 state.emotion_analysis = emotion_analysis
                 
-            # Fallback to URL-based processing (legacy support)
-            elif state.audio_url:
-                # Download and transcribe audio
-                transcript = await ai_service.transcribe_audio(state.audio_url)
-                state.user_response = transcript
-                
-                # Analyze speech quality
-                speech_analysis = await ai_service.analyze_speech_quality(state.audio_url, transcript)
-                state.speech_analysis = speech_analysis
-                
-                # Detect emotions
-                emotion_analysis = await ai_service.detect_emotions(state.audio_url, transcript)
-                state.emotion_analysis = emotion_analysis
-                
+                # Add processing metrics to the state
+                if hasattr(state, "audio_metadata") and state.audio_metadata:
+                    processing_metrics = {
+                        "original_format": state.audio_metadata.get("detected_format", "unknown"),
+                        "original_size": state.audio_metadata.get("original_size", 0),
+                        "processed_size": state.audio_metadata.get("processed_size", 0),
+                        "processing_success": state.audio_metadata.get("processing_success", False)
+                    }
+                    state.audio_processing_metrics = processing_metrics
         except Exception as e:
             state.error_message = f"Audio processing failed: {str(e)}"
+            # Still preserve user response if available
+            if not state.user_response and hasattr(state, "audio_metadata"):
+                state.user_response = "[Audio processing failed. Please provide a text response.]"
         
         return state
     
@@ -500,7 +509,7 @@ class InterviewWorkflow:
                 response_record = {
                     "question": state.current_question,
                     "user_response": state.user_response,
-                    "audio_url": getattr(state, 'audio_url', None),
+                    "has_audio_data": state.audio_data is not None,
                     "evaluation": evaluation,
                     "timestamp": datetime.now().isoformat(),
                     "is_follow_up": getattr(state, 'is_follow_up', False),

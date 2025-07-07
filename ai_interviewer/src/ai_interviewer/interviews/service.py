@@ -3,7 +3,7 @@ Interview business logic and LangGraph workflow integration
 """
 
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -12,6 +12,44 @@ from . import schemas, models
 from .schemas import LangGraphState
 from ..ai.workflow import interview_workflow
 from ..auth.models import User
+from ..utils.audio_processing import process_audio_data
+
+
+def clean_workflow_state_for_db(workflow_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Clean workflow state by converting datetime objects to strings and removing non-serializable data for JSON storage."""
+    
+    # Fields that should not be stored in the database (binary data, temporary processing data)
+    EXCLUDE_FIELDS = {'audio_data', 'video_data', 'temp_data'}
+    
+    def clean_value(value, key=None):
+        # Skip excluded fields
+        if key in EXCLUDE_FIELDS:
+            return None
+            
+        if isinstance(value, datetime):
+            return value.isoformat()
+        elif isinstance(value, bytes):
+            # Don't store raw bytes in JSON - return metadata instead
+            return f"<binary_data:{len(value)}_bytes>" if value else None
+        elif isinstance(value, str):
+            # Check if the string might contain binary data and avoid UTF-8 issues
+            try:
+                # Test if string can be safely encoded/decoded
+                value.encode('utf-8').decode('utf-8')
+                return value
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                # If there are encoding issues, return safe metadata
+                return f"<encoded_string:{len(value)}_chars>"
+        elif isinstance(value, dict):
+            return {k: clean_value(v, k) for k, v in value.items() if k not in EXCLUDE_FIELDS}
+        elif isinstance(value, list):
+            return [clean_value(item) for item in value]
+        else:
+            return value
+    
+    cleaned = clean_value(workflow_state)
+    # Ensure we always return a dict
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 class InterviewService:
@@ -110,7 +148,7 @@ class InterviewService:
         state = await interview_workflow.present_question(state)
         
         # Update session with workflow state
-        session.workflow_state = state.dict()
+        session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         session.current_step = state.current_step
         session.session_status = "started"
         
@@ -130,7 +168,7 @@ class InterviewService:
         self, 
         session_token: str,
         response_text: Optional[str] = None,
-        audio_file_url: Optional[str] = None
+        audio_data: Optional[Union[bytes, str]] = None
     ) -> Dict[str, Any]:
         """Submit a response to the current question."""
         
@@ -149,10 +187,31 @@ class InterviewService:
         
         # Update state with user response
         state.user_response = response_text
-        state.audio_url = audio_file_url
+        
+        # Process audio data using the new robust audio processing
+        if audio_data:
+            try:
+                # Use the new audio processor to handle both base64 strings and bytes
+                processed_audio, audio_metadata = process_audio_data(audio_data)
+                
+                # Update state with processed audio and metadata
+                state.audio_data = processed_audio
+                state.audio_format = audio_metadata["detected_format"]
+                state.audio_metadata = audio_metadata
+            except ValueError as e:
+                # Return informative error for invalid audio
+                raise HTTPException(status_code=400, detail=f"Audio processing error: {str(e)}")
+            except Exception as e:
+                # Log more serious errors but continue with text
+                print(f"⚠️ Audio processing error: {str(e)}")
+                state.audio_data = None
+                state.audio_metadata = {"error": str(e)}
+        else:
+            state.audio_data = None
+            state.audio_metadata = None
         
         # Process the response through workflow
-        if audio_file_url:
+        if audio_data:
             state = await interview_workflow.process_audio(state)
         
         state = await interview_workflow.evaluate_response(state)
@@ -176,7 +235,7 @@ class InterviewService:
             session.session_status = "completed"
         
         # Update session with new state
-        session.workflow_state = state.dict()
+        session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         session.current_step = state.current_step
         session.last_activity_at = datetime.now()
         
@@ -260,7 +319,7 @@ class InterviewService:
         self, 
         session_token: str,
         response_text: Optional[str] = None,
-        audio_file_url: Optional[str] = None,
+        audio_data: Optional[Union[bytes, str]] = None,
         include_analysis: bool = True
     ) -> Dict[str, Any]:
         """Execute the complete interview workflow for a response."""
@@ -280,7 +339,21 @@ class InterviewService:
         
         # Update state with new response
         state.user_response = response_text
-        state.audio_url = audio_file_url
+        
+        # Handle audio data (could be raw bytes or base64 encoded)
+        if audio_data:
+            if isinstance(audio_data, str):
+                # If it's a string, assume it's base64 encoded
+                import base64
+                try:
+                    state.audio_data = base64.b64decode(audio_data)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid base64 audio data: {str(e)}")
+            else:
+                # Raw bytes
+                state.audio_data = audio_data
+        else:
+            state.audio_data = None
         
         try:
             # Execute full workflow sequence from sequential diagram
@@ -296,7 +369,7 @@ class InterviewService:
                 raise HTTPException(status_code=400, detail=state.error_message)
             
             # 3. Audio Processing (if audio provided)
-            if audio_file_url:
+            if audio_data:
                 state = await interview_workflow.process_audio(state)
             
             # 4. Response Validation
@@ -347,7 +420,7 @@ class InterviewService:
                 session.session_status = "completed"
             
             # Update session with new state
-            session.workflow_state = state.dict()
+            session.workflow_state = clean_workflow_state_for_db(state.model_dump())
             session.current_step = state.current_step
             session.last_activity_at = datetime.now()
             
@@ -408,7 +481,7 @@ class InterviewService:
         state = await interview_workflow.check_interview_prerequisites(state)
         
         # Update session
-        session.workflow_state = state.dict()
+        session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         session.current_step = state.current_step
         self.db.commit()
         
@@ -550,7 +623,7 @@ class InterviewService:
         
         session.is_active = False
         session.session_status = "completed"
-        session.workflow_state = state.dict()
+        session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         
         self.db.commit()
         

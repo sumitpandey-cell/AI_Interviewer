@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .manager import websocket_manager
 from ..database.session import get_db
 from ..interviews.models import InterviewSession
-from ..auth.dependencies import get_current_user_from_token
+from ..auth.dependencies import get_current_user
 from ..ai.service import AIService
 
 router = APIRouter()

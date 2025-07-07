@@ -12,10 +12,10 @@ from alembic import context
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 # Import our models and config
-from ..src.ai_interviewer.config import settings
-from ..src.ai_interviewer.database.base import Base
-from ..src.ai_interviewer.auth.models import User  # Import all models here
-from ..src.ai_interviewer.interviews.models import Interview, Question, InterviewQuestion, Answer, InterviewSession, AudioVideoFile
+from ai_interviewer.config import settings
+from ai_interviewer.database.base import Base
+from ai_interviewer.auth.models import User  # Import all models here
+from ai_interviewer.interviews.models import Interview, Question, InterviewQuestion, Answer, InterviewSession
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

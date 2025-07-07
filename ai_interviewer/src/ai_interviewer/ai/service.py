@@ -38,7 +38,7 @@ class AIService:
             # Initialize LLM
             if settings.GOOGLE_API_KEY:
                 self.llm = ChatGoogleGenerativeAI(
-                    model="gemini-pro",
+                    model="gemini-1.5-flash",
                     google_api_key=settings.GOOGLE_API_KEY,
                     temperature=0.7
                 )
@@ -748,11 +748,14 @@ class AIService:
 
     # Direct Audio Data Processing Methods (for real-time streaming)
     
-    async def transcribe_audio_data(self, audio_data: bytes, audio_format: str = "webm") -> str:
+    async def transcribe_audio_data(self, audio_data: bytes, audio_format: str = "wav") -> str:
         """Transcribe audio data directly using Google Cloud Speech-to-Text."""
         try:
             if not self.speech_client:
                 return "[Audio transcription not available - please type your response]"
+            
+            # Audio format should already be normalized to 16kHz mono WAV by the audio_processing utility
+            # But we'll still handle different formats for robustness
             
             # Configure recognition based on audio format
             if audio_format.lower() in ["webm", "webm-opus"]:
@@ -763,14 +766,14 @@ class AIService:
                 sample_rate = 16000
             elif audio_format.lower() == "wav":
                 encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
-                sample_rate = 16000
+                sample_rate = 16000  # Our audio_processing utility normalizes to 16kHz
             elif audio_format.lower() == "ogg":
                 encoding = speech.RecognitionConfig.AudioEncoding.OGG_OPUS
                 sample_rate = 48000
             else:
-                # Default to WEBM_OPUS
-                encoding = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
-                sample_rate = 48000
+                # Default to LINEAR16 (WAV) since our audio processor normalizes to WAV
+                encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
+                sample_rate = 16000
             
             # Create audio object from bytes
             audio = speech.RecognitionAudio(content=audio_data)

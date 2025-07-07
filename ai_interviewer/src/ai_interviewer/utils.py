@@ -45,7 +45,12 @@ def decode_access_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload
-    except JWTError:
+    except JWTError as e:
+        # Log the specific error for debugging
+        print(f"JWT Error: {str(e)}")
+        print(f"Token: {token[:20]}..." if len(token) > 20 else f"Token: {token}")
+        print(f"Secret Key exists: {bool(settings.SECRET_KEY)}")
+        print(f"Algorithm: {settings.ALGORITHM}")
         return None
 
 

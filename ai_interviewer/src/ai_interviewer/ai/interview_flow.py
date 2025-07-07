@@ -172,7 +172,7 @@ class InterviewFlow:
         """Route based on response type."""
         if state.error_message and "timeout" in state.error_message.lower():
             return "timeout"
-        elif state.audio_url:
+        elif state.audio_data:
             return "process_audio"
         else:
             return "validate_response"
@@ -198,15 +198,13 @@ class InterviewFlow:
         # Update state with user input
         state.user_response = user_response
         
-        # Handle audio data directly instead of URL
+        # Handle audio data directly (real-time streaming only)
         if audio_data:
             state.audio_data = audio_data  # Store audio bytes
             state.audio_format = audio_format
-            state.audio_url = None  # No URL since we have direct data
         else:
             state.audio_data = None
             state.audio_format = None
-            state.audio_url = None
         
         # Continue from response processing
         if state.current_step == "waiting_for_response":
@@ -236,7 +234,7 @@ class InterviewFlow:
         response_workflow.add_node("end_interview", self._end_interview_node)
         
         # Set entry point based on response type
-        if state.audio_url:
+        if state.audio_data:
             response_workflow.set_entry_point("process_audio")
             response_workflow.add_edge("process_audio", "validate_response")
         else:
