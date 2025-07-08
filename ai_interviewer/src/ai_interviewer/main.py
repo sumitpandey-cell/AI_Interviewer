@@ -4,7 +4,6 @@ FastAPI application entry point
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from .auth.router import router as auth_router
 from .interviews.router import router as interviews_router
 from .websocket.router import router as websocket_router
@@ -22,7 +21,7 @@ def create_app() -> FastAPI:
     # Configure CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_origins=settings.ALLOWED_ORIGINS or ["*"],  # Default to allow all origins if not set
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

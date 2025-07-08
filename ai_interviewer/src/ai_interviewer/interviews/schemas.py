@@ -6,7 +6,6 @@ from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 from pydantic import BaseModel
 
-
 class InterviewBase(BaseModel):
     """Base interview schema."""
     title: str

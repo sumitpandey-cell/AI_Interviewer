@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ai_interviewer.auth.models import User
 from ai_interviewer.users.schemas import UserUpdate, UserCreate
-from ai_interviewer.utils import hash_password
+from ai_interviewer.utilities import hash_password
 from ai_interviewer.exceptions import UserNotFoundException
 
 

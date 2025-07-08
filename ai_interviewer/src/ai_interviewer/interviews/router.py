@@ -96,7 +96,6 @@ async def start_interview(
     """Start an interview session with LangGraph workflow."""
     service = InterviewService(db)
     result = await service.start_interview(interview_id, current_user.id)
-    
     return schemas.InterviewStartResponse(
         session_token=result["session_token"],
         first_question=result["first_question"],
@@ -168,6 +167,11 @@ async def pause_session(
     # Update session status
     session.session_status = "paused"
     session.last_activity_at = func.now()
+    
+    # Also update interview status to paused
+    interview = session.interview
+    interview.status = "paused"
+    
     db.commit()
     
     return {"message": "Session paused", "session_token": session_token}
@@ -195,9 +199,22 @@ async def resume_session(
     # Resume session
     session.session_status = "started"
     session.last_activity_at = func.now()
+    
+    # Update interview status back to in_progress
+    interview = session.interview
+    interview.status = "in_progress"
+    
     db.commit()
     
-    return {"message": "Session resumed", "session_token": session_token}
+    # Get the current question from state
+    state_dict = session.workflow_state or {}
+    current_question = state_dict.get("current_question", None)
+    
+    return {
+        "message": "Session resumed", 
+        "session_token": session_token,
+        "current_question": current_question
+    }
 
 
 @router.delete("/session/{session_token}")
@@ -710,3 +727,14 @@ async def demo_complete_workflow(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Demo workflow failed: {str(e)}")
+
+
+@router.get("/{interview_id}/active-session")
+async def get_active_session(
+    interview_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get the active session for an interview if one exists."""
+    service = InterviewService(db)
+    return service.get_active_session_for_interview(interview_id, current_user.id)

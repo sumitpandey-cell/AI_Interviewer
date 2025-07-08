@@ -25,7 +25,6 @@ ai_service = AIService()
 async def websocket_interview_endpoint(
     websocket: WebSocket,
     session_token: str,
-    token: Optional[str] = None
 ):
     """WebSocket endpoint for real-time interview communication."""
     try:
@@ -93,8 +92,8 @@ async def handle_audio_chunk(session_token: str, message: dict):
             # Process chunk for real-time transcription (if supported)
             if ai_service.speech_client:
                 try:
-                    # Note: Google Speech API supports streaming, but this is a simplified version
-                    partial_transcript = await process_audio_chunk_for_transcript(audio_bytes)
+                    # Process audio chunk with streaming recognition
+                    partial_transcript = await process_audio_chunk_for_transcript(audio_bytes, session_token)
                     if partial_transcript:
                         await websocket_manager.send_transcript_update(
                             session_token, 
@@ -129,6 +128,15 @@ async def handle_final_audio(session_token: str, message: dict):
                 "processing",
                 {"message": "Processing complete audio..."}
             )
+            
+            # Cleanup streaming session if it exists
+            if session_token in websocket_manager.streaming_clients:
+                # Save the current transcript before cleanup
+                current_transcript = websocket_manager.streaming_clients[session_token].get('current_transcript', '')
+                websocket_manager.streaming_clients[session_token] = {
+                    'active': False,
+                    'current_transcript': current_transcript
+                }
             
             # Transcribe complete audio
             if ai_service.speech_client:
@@ -178,11 +186,82 @@ async def handle_status_request(session_token: str):
     })
 
 
-async def process_audio_chunk_for_transcript(audio_chunk: bytes) -> Optional[str]:
-    """Process audio chunk for real-time transcription."""
-    # This is a simplified version - real implementation would use streaming APIs
-    # For now, return None (no real-time transcription)
-    return None
+async def process_audio_chunk_for_transcript(audio_chunk: bytes, session_token: Optional[str] = None) -> Optional[str]:
+    """Process audio chunk for real-time transcription using Google's StreamingRecognize API."""
+    if not session_token:
+        return None
+        
+    try:
+        from google.cloud import speech_v1p1beta1 as speech
+        
+        if not ai_service.speech_client:
+            logger.warning("Speech client not available")
+            return None
+            
+        # Configure streaming recognition if this is a new streaming session
+        if session_token not in websocket_manager.streaming_clients:
+            logger.info(f"Creating new streaming recognition session for {session_token}")
+            
+            # Create a simplified approach for this implementation
+            # Store audio chunks in the buffer
+            if session_token not in websocket_manager.audio_buffers:
+                websocket_manager.audio_buffers[session_token] = []
+            
+            # Initialize transcript storage
+            websocket_manager.streaming_clients[session_token] = {
+                'active': True,
+                'current_transcript': "",
+                'last_processed': 0  # Index of last processed chunk
+            }
+        
+        # Add the chunk to the audio buffer for this session
+        if session_token not in websocket_manager.audio_buffers:
+            websocket_manager.audio_buffers[session_token] = []
+        
+        websocket_manager.audio_buffers[session_token].append(audio_chunk)
+        
+        # Process the received chunk with Speech API
+        # In a real implementation, we would use streaming recognition more efficiently
+        # For this implementation, we'll process each chunk individually
+        
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            sample_rate_hertz=48000,
+            language_code="en-US",
+            enable_automatic_punctuation=True,
+        )
+        
+        audio = speech.RecognitionAudio(content=audio_chunk)
+        
+        # Send the audio chunk for recognition
+        try:
+            response = ai_service.speech_client.recognize(config=config, audio=audio)
+            
+            if response.results and len(response.results) > 0:
+                result = response.results[0]
+                if result.alternatives and len(result.alternatives) > 0:
+                    transcript = result.alternatives[0].transcript
+                    
+                    # Update the transcript in streaming_clients
+                    client_data = websocket_manager.streaming_clients[session_token]
+                    
+                    if transcript:
+                        # Append to current transcript if this is new content
+                        if not client_data['current_transcript'] or not client_data['current_transcript'].endswith(transcript):
+                            client_data['current_transcript'] += " " + transcript
+                            client_data['current_transcript'] = client_data['current_transcript'].strip()
+                    
+                    return client_data['current_transcript']
+        except Exception as e:
+            logger.error(f"Error processing audio chunk: {e}")
+        
+        # Return the current transcript if available
+        if session_token in websocket_manager.streaming_clients:
+            return websocket_manager.streaming_clients[session_token].get('current_transcript', None)
+            
+    except Exception as e:
+        logger.error(f"Streaming transcription error: {e}")
+        return None
 
 
 async def transcribe_complete_audio(audio_data: bytes) -> str:

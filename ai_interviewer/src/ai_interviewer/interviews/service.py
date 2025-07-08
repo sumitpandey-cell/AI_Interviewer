@@ -12,7 +12,7 @@ from . import schemas, models
 from .schemas import LangGraphState
 from ..ai.workflow import interview_workflow
 from ..auth.models import User
-from ..utils.audio_processing import process_audio_data
+from ..utilities import process_audio_data
 
 
 def clean_workflow_state_for_db(workflow_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -100,18 +100,36 @@ class InterviewService:
         ).all()
     
     async def start_interview(
-        self, 
-        interview_id: int, 
+        self,
+        interview_id: int,
         user_id: int
     ) -> Dict[str, Any]:
         """Start an interview session using LangGraph workflow."""
         
         # Get the interview
         interview = self.get_interview(interview_id, user_id)
+        # Check for existing active session if the interview is in_progress
+        if interview.status == "in_progress":
+            # Get the active session
+            session = self.db.query(models.InterviewSession).filter(
+                models.InterviewSession.interview_id == interview_id,
+                models.InterviewSession.is_active == True
+            ).order_by(models.InterviewSession.created_at.desc()).first()
+            
+            if session:
+                # Return the existing session
+                state_dict = session.workflow_state or {}
+                return {
+                    "session_token": session.session_token,
+                    "first_question": state_dict.get("current_question"),
+                    "workflow_state": state_dict,
+                    "is_resumed": True
+                }
         
+        # Only allow starting new sessions for interviews in 'created' status
         if interview.status != "created":
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Interview cannot be started. Current status: {interview.status}"
             )
         
@@ -635,7 +653,41 @@ class InterviewService:
             "interview_report": getattr(state, 'interview_report', None),
             "insights": getattr(state, 'interview_insights', None)
         }
-
+    
+    def get_active_session_for_interview(self, interview_id: int, user_id: int) -> Dict[str, Any]:
+        """Get the active session for an interview, if one exists."""
+        interview = self.get_interview(interview_id, user_id)
+        
+        # First check if interview is in progress
+        if interview.status != "in_progress":
+            return {
+                "has_active_session": False,
+                "message": f"Interview is not in progress. Current status: {interview.status}"
+            }
+        
+        # Get the most recent active session
+        session = self.db.query(models.InterviewSession).filter(
+            models.InterviewSession.interview_id == interview_id,
+            models.InterviewSession.is_active == True
+        ).order_by(models.InterviewSession.created_at.desc()).first()
+        
+        if not session:
+            return {
+                "has_active_session": False,
+                "message": "No active session found for this interview"
+            }
+        
+        state_dict = session.workflow_state or {}
+        
+        return {
+            "has_active_session": True,
+            "session_token": session.session_token,
+            "current_question": state_dict.get("current_question"),
+            "current_step": session.current_step,
+            "session_status": session.session_status,
+            "last_activity_at": session.last_activity_at
+        }
+        
 
 # Legacy functions for backward compatibility
 async def create_interview(interview: schemas.InterviewCreate, db: Session):

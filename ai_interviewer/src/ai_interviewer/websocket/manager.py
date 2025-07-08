@@ -21,6 +21,8 @@ class ConnectionManager:
         self.connection_metadata: Dict[str, Dict] = {}
         # Audio buffers for streaming: {session_token: [audio_chunks]}
         self.audio_buffers: Dict[str, List[bytes]] = {}
+        # Streaming speech recognition clients: {session_token: {client, active}}
+        self.streaming_clients: Dict[str, Dict] = {}
     
     async def connect(self, websocket: WebSocket, session_token: str, user_id: int):
         """Accept a new WebSocket connection."""
@@ -51,6 +53,14 @@ class ConnectionManager:
             del self.connection_metadata[session_token]
         if session_token in self.audio_buffers:
             del self.audio_buffers[session_token]
+        if session_token in self.streaming_clients:
+            # Close any streaming clients
+            try:
+                if self.streaming_clients[session_token].get('client'):
+                    self.streaming_clients[session_token]['client'].finish()
+            except Exception as e:
+                logger.error(f"Error closing streaming client: {e}")
+            del self.streaming_clients[session_token]
         
         logger.info(f"WebSocket disconnected for session {session_token}")
     
