@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 google_TTS.json
+google.STT.json
 
 # Environment variables
 ai_interviewer/.env

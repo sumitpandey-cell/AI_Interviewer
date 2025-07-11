@@ -121,7 +121,7 @@ async def submit_response(
     return schemas.SubmitResponseResponse(
         evaluation=schemas.EvaluationResponse(**result["evaluation"]),
         next_question=result["next_question"],
-        audio_data=result.get("audio_data"),  # Include TTS audio data
+        audio_data=result.get("question_audio_data"),  # Include TTS audio data
         is_completed=result["is_completed"],
         workflow_state=result["workflow_state"]
     )

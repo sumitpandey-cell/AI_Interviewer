@@ -317,7 +317,7 @@ class InterviewService:
         
         # Prepare response
         evaluation = state.ai_evaluation or {}
-        next_question = getattr(state, 'next_question',None) if state.should_continue else None
+        next_question = getattr(state, 'current_question',None) if state.should_continue else None
         
         # Debug audio response
         audio_response = getattr(state, 'audio_response', None)

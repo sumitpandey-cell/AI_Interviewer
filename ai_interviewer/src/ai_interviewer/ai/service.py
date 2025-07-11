@@ -290,11 +290,7 @@ class AIService:
                 print(f"LLM follow-up result type: {type(result)}")
                 content = getattr(result, 'content', result)
                 
-                try:
-                    result_json = json.loads(content)
-                    return result_json
-                except Exception:
-                    pass
+                return content
             except Exception as e:
                 print(f"⚠️ LLM follow-up generation failed: {e}")
                 print("Falling back to rule-based follow-up...")

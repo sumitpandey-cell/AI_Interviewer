@@ -127,6 +127,7 @@ class InterviewWorkflow:
         # Generate TTS audio for the current question if TTS service is available
         if tts_service:
                     try:
+                        current_question = state.current_question
                         # Extract just the question text for TTS
                         question_text = current_question.get("question", "")
                         
