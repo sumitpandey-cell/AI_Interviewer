@@ -4,12 +4,16 @@ AI processing logic for interview workflow
 
 import os
 import json
+import re
+import asyncio
 from typing import Dict, List, Any, Optional
 from .prompts import prompt_template
-
+import base64
+from ..utilities.Speech_to_text.stt_service import get_stt_service
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from .prompts import render_evalution_prompt
 
 try:
     from google.cloud import speech_v1p1beta1 as speech
@@ -49,32 +53,6 @@ class AIService:
             print(f"⚠️ Failed to initialize Google Generative AI: {e}")
             self.llm = None
         
-        try:
-            # Initialize Google Cloud Speech
-            if GOOGLE_CLOUD_AVAILABLE and speech:
-                # Check for credentials
-                credentials_available = (
-                    settings.GOOGLE_APPLICATION_CREDENTIALS or 
-                    os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or
-                    os.getenv("GOOGLE_CLOUD_PROJECT")
-                )
-                
-                if credentials_available:
-                    # Set credentials environment variable if provided
-                    if settings.GOOGLE_APPLICATION_CREDENTIALS:
-                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.GOOGLE_APPLICATION_CREDENTIALS
-                    
-                    self.speech_client = speech.SpeechClient()
-                    print("✅ Google Cloud Speech initialized")
-                else:
-                    print("⚠️ Failed to initialize Google Cloud Speech: Your default credentials were not found. To set up Application Default Credentials, see https://cloud.google.com/docs/authentication/external/set-up-adc for more information.")
-                    self.speech_client = None
-            else:
-                print("⚠️ Google Cloud Speech not available - install google-cloud-speech")
-                self.speech_client = None
-        except Exception as e:
-            print(f"⚠️ Failed to initialize Google Cloud Speech: {e}")
-            self.speech_client = None
         
         # try:
         #     # Initialize Google Cloud Storage
@@ -89,227 +67,171 @@ class AIService:
         #     self.storage_client = None
 
 
-    async def generate_interview_questions(
+    async def generate_interview_question(
         self, 
         position: str, 
         interview_type: str = "technical",
         difficulty: str = "medium",
+        number_of_questions: Optional[int] = 1,
         company: Optional[str] = None,
-        num_questions: int = 5
     ) -> List[Dict[str, Any]]:
-        """Generate interview questions using AI."""
-        
-        # If LLM is not available, return fallback questions
-        if not self.llm:
-            return self._get_fallback_questions(position, interview_type, difficulty, num_questions)
-        
+        """Generate a single interview question using AI."""
         try:
-            # Create context-aware prompt for question generation
             company_context = f" at {company}" if company else ""
-            
-            
-            
-            # Format the prompt
-            formatted_prompt = prompt_template.format(
-                num_questions=num_questions,
-                interview_type=interview_type,
-                position=position,
-                company_context=company_context,
-                difficulty=difficulty
-            )
-            
-            # Setup JSON output parser
+
             json_parser = JsonOutputParser()
             
-            # Create the chain
             chain = prompt_template | self.llm | json_parser
-            
-            # Generate questions using AI
+
             result = await chain.ainvoke({
-                "num_questions": num_questions,
                 "interview_type": interview_type,
                 "position": position,
                 "company_context": company_context,
-                "difficulty": difficulty
+                "difficulty": difficulty,
+                "number_of_questions": number_of_questions
             })
+            print(f"LLM result type: {type(result)}")
+            print(result)
             
             # Validate and process the result
-            if isinstance(result, list) and len(result) > 0:
-                questions = []
-                for i, q in enumerate(result[:num_questions]):
-                    if isinstance(q, dict) and "question" in q:
-                        # Ensure all required fields are present
-                        question_obj = {
-                            "question": q.get("question", f"Default question {i+1}"),
-                            "type": q.get("type", interview_type),
-                            "difficulty": difficulty,
-                            "expected_points": q.get("expected_points", ["General response"]),
-                            "evaluation_criteria": q.get("evaluation_criteria", {"overall": 1.0})
-                        }
-                        
-                        # Validate evaluation criteria sum to 1.0
-                        criteria_sum = sum(question_obj["evaluation_criteria"].values())
-                        if abs(criteria_sum - 1.0) > 0.1:  # Allow small floating point errors
-                            # Normalize criteria
-                            question_obj["evaluation_criteria"] = {
-                                k: v / criteria_sum for k, v in question_obj["evaluation_criteria"].items()
-                            }
-                        
-                        questions.append(question_obj)
-                
-                if questions:
-                    return questions
-            
-            # If AI generation failed, return fallback
-            print("⚠️ AI generation returned invalid format, using fallback questions")
-            return self._get_fallback_questions(position, interview_type, difficulty, num_questions)
-            
+            if isinstance(result, list):
+                return result
+            else:
+                print("⚠️ AI generation returned invalid format, using fallback question")
+
+            # Ensure all required fields are present
+            question_obj = [{
+                "question": "Default question",
+                "type": interview_type,
+                "difficulty": difficulty,
+                "expected_points": ["General response"],
+                "evaluation_criteria": {"overall": 1.0}
+            }]
+            # Validate evaluation criteria sum to 1.0
+            criteria_sum = sum(question_obj[0]["evaluation_criteria"].values())
+            if abs(criteria_sum - 1.0) > 0.1:
+                question_obj[0]["evaluation_criteria"] = {
+                    k: v / criteria_sum for k, v in question_obj[0]["evaluation_criteria"].items()
+                }
+            return question_obj
         except Exception as e:
-            print(f"⚠️ Error generating questions with AI: {e}")
-            # Return fallback questions on error
-            return self._get_fallback_questions(position, interview_type, difficulty, num_questions)
+            print(f"⚠️ Error generating question with AI: {e}")
+            return self._get_fallback_questions(position, interview_type, difficulty, 1)
     
     def _get_fallback_questions(
-        self, 
-        position: str, 
-        interview_type: str, 
-        difficulty: str, 
-        num_questions: int
+        self,
+        position: str,
+        interview_type: str = "technical",
+        difficulty: str = "medium",
+        num_questions: int = 1
     ) -> List[Dict[str, Any]]:
-        """Generate fallback questions when AI is not available."""
-        
-        if interview_type == "technical":
-            base_questions = [
+        """Return fallback interview questions if AI generation fails."""
+        fallback_questions = {
+            "technical": [
                 {
-                    "question": f"Tell me about your experience with {position} development and the technologies you've worked with.",
-                    "type": "experience",
-                    "expected_points": ["Experience", "Technologies", "Projects", "Challenges"],
-                    "evaluation_criteria": {"technical_knowledge": 0.6, "communication": 0.4}
+                    "question": f"What are the key responsibilities of a {position}?",
+                    "type": "technical",
+                    "difficulty": difficulty,
+                    "expected_points": ["Core responsibilities", "Required skills", "Typical challenges"],
+                    "evaluation_criteria": {"overall": 1.0}
                 },
                 {
-                    "question": f"Describe a challenging {position} problem you solved. Walk me through your approach.",
-                    "type": "problem_solving",
-                    "expected_points": ["Problem description", "Solution approach", "Implementation", "Results"],
-                    "evaluation_criteria": {"problem_solving": 0.7, "technical_depth": 0.3}
+                    "question": f"Explain a recent project you worked on as a {position}.",
+                    "type": "technical",
+                    "difficulty": difficulty,
+                    "expected_points": ["Project overview", "Technologies used", "Outcome"],
+                    "evaluation_criteria": {"overall": 1.0}
+                }
+            ],
+            "behavioral": [
+                {
+                    "question": "Tell me about a time you faced a challenge at work and how you handled it.",
+                    "type": "behavioral",
+                    "difficulty": difficulty,
+                    "expected_points": ["Situation", "Task", "Action", "Result"],
+                    "evaluation_criteria": {"overall": 1.0}
                 },
                 {
-                    "question": f"How do you ensure code quality and maintainability in {position} projects?",
-                    "type": "best_practices",
-                    "expected_points": ["Code review", "Testing", "Documentation", "Standards"],
-                    "evaluation_criteria": {"technical_knowledge": 0.5, "best_practices": 0.5}
-                },
-                {
-                    "question": f"Explain how you would design a scalable system for a {position.lower()} application.",
-                    "type": "system_design",
-                    "expected_points": ["Architecture", "Scalability", "Performance", "Trade-offs"],
-                    "evaluation_criteria": {"system_design": 0.8, "technical_depth": 0.2}
-                },
-                {
-                    "question": f"How do you stay updated with the latest {position} technologies and trends?",
-                    "type": "learning",
-                    "expected_points": ["Learning resources", "Community involvement", "Experimentation"],
-                    "evaluation_criteria": {"learning_mindset": 0.6, "technical_awareness": 0.4}
+                    "question": "Describe a situation where you worked as part of a team.",
+                    "type": "behavioral",
+                    "difficulty": difficulty,
+                    "expected_points": ["Teamwork", "Collaboration", "Outcome"],
+                    "evaluation_criteria": {"overall": 1.0}
                 }
             ]
-        
-        elif interview_type == "behavioral":
-            base_questions = [
-                {
-                    "question": "Tell me about a time when you had to work with a difficult team member. How did you handle it?",
-                    "type": "teamwork",
-                    "expected_points": ["Situation", "Action", "Communication", "Result"],
-                    "evaluation_criteria": {"teamwork": 0.5, "communication": 0.3, "conflict_resolution": 0.2}
-                },
-                {
-                    "question": "Describe a project where you had to learn something new quickly. How did you approach it?",
-                    "type": "adaptability",
-                    "expected_points": ["Learning approach", "Resources used", "Timeline", "Outcome"],
-                    "evaluation_criteria": {"adaptability": 0.6, "learning_ability": 0.4}
-                },
-                {
-                    "question": "Tell me about a time when you had to make a difficult decision with limited information.",
-                    "type": "decision_making",
-                    "expected_points": ["Context", "Decision process", "Risk assessment", "Outcome"],
-                    "evaluation_criteria": {"decision_making": 0.7, "analytical_thinking": 0.3}
-                },
-                {
-                    "question": "Describe a situation where you had to lead a project or initiative. What was your approach?",
-                    "type": "leadership",
-                    "expected_points": ["Leadership style", "Planning", "Team motivation", "Results"],
-                    "evaluation_criteria": {"leadership": 0.6, "project_management": 0.4}
-                },
-                {
-                    "question": "Tell me about a time when you received criticism. How did you handle it?",
-                    "type": "feedback",
-                    "expected_points": ["Reception", "Processing", "Action taken", "Growth"],
-                    "evaluation_criteria": {"emotional_intelligence": 0.5, "growth_mindset": 0.5}
-                }
-            ]
-        
-        else:  # mixed
-            base_questions = [
-                {
-                    "question": f"Tell me about your experience with {position} development and how you've grown in this role.",
-                    "type": "experience_growth",
-                    "expected_points": ["Technical experience", "Career progression", "Learning", "Goals"],
-                    "evaluation_criteria": {"technical_knowledge": 0.4, "career_growth": 0.3, "communication": 0.3}
-                },
-                {
-                    "question": f"Describe a {position} project that didn't go as planned. How did you handle it?",
-                    "type": "problem_resolution",
-                    "expected_points": ["Problem identification", "Technical solutions", "Team dynamics", "Learning"],
-                    "evaluation_criteria": {"problem_solving": 0.4, "adaptability": 0.3, "technical_skills": 0.3}
-                },
-                {
-                    "question": f"How do you balance technical debt with feature development in {position} projects?",
-                    "type": "technical_management",
-                    "expected_points": ["Technical understanding", "Prioritization", "Communication", "Strategy"],
-                    "evaluation_criteria": {"technical_knowledge": 0.5, "strategic_thinking": 0.3, "communication": 0.2}
-                }
-            ]
-        
-        # Adjust questions based on difficulty
-        if difficulty == "easy":
-            # Use simpler language and basic concepts
-            for q in base_questions:
-                q["question"] = q["question"].replace("challenging", "simple")
-                q["question"] = q["question"].replace("complex", "basic")
-        elif difficulty == "hard":
-            # Add more complex scenarios
-            for q in base_questions:
-                if "system" in q["question"].lower():
-                    q["question"] = q["question"].replace("scalable system", "highly scalable, distributed system")
-        
-        # Add difficulty and return requested number
-        for q in base_questions:
-            q["difficulty"] = difficulty
-        
-        return base_questions[:num_questions]
+        }
+        questions = fallback_questions.get(interview_type, fallback_questions["technical"])
+        return questions[:num_questions]
+
+
 
     async def evaluate_response(
-        self, 
-        question: str, 
+        self,
+        question: str,
         user_response: str,
         expected_points: Optional[List[str]] = None,
         evaluation_criteria: Optional[Dict[str, float]] = None
     ) -> Dict[str, Any]:
-        """Evaluate a user's response to an interview question."""
-        # Return mock evaluation for now
+        """Evaluate a user's response using LLM if available; otherwise, fallback to rule-based evaluation."""
+
+        # ========== USE LLM IF AVAILABLE ==========
+        if self.llm:
+            try:
+                print("Evaluating response with LLM...")
+
+                # Generate LLM prompt
+                prompt = render_evalution_prompt(
+                    question=question,
+                    user_response=user_response,
+                    expected_points=expected_points,
+                    evaluation_criteria=evaluation_criteria
+                )
+
+                # Invoke LLM
+                result = await self.llm.ainvoke(prompt)
+                raw = result.content
+
+                print(f"LLM content type: {type(raw)}")
+                print("Raw LLM output:")
+                print(raw)
+
+                # Try to extract JSON from ```json ... ```
+                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+                cleaned_json_str = match.group(1) if match else raw
+
+                # Try parsing JSON
+                result_json = json.loads(cleaned_json_str)
+                return result_json
+
+            except Exception as e:
+                print(f"⚠️ LLM evaluation failed: {e}")
+                print("Falling back to rule-based evaluation...")
+
+        # ========== RULE-BASED FALLBACK ==========
+        score = 7.5
+        improvements = []
+        feedback = "Good response! You demonstrated understanding of the topic."
+        detailed = {}
+
+        if expected_points:
+            covered = sum(1 for pt in expected_points if pt.lower() in user_response.lower())
+            total = len(expected_points)
+            score = 5 + 5 * (covered / total) if total else 7.5
+            if covered < total:
+                improvements.append("Address all expected points in your answer.")
+            detailed = {pt: (8 if pt.lower() in user_response.lower() else 5) for pt in expected_points}
+
+        if evaluation_criteria:
+            for k in evaluation_criteria:
+                detailed[k] = detailed.get(k, 7)
+
         return {
-            "overall_score": 7.5,
-            "feedback": "Good response! You demonstrated understanding of the topic. Consider providing more specific examples.",
-            "detailed_analysis": {
-                "technical_accuracy": 8,
-                "communication": 7,
-                "completeness": 7
-            },
-            "improvements": ["Provide more concrete examples", "Elaborate on specific technologies used"]
+            "overall_score": round(score, 1),
+            "feedback": feedback,
+            "detailed_analysis": detailed,
+            "improvements": improvements or ["Provide more concrete examples."]
         }
 
-    async def transcribe_audio(self, audio_url: str) -> str:
-        """Transcribe audio from a URL using Google Cloud Speech-to-Text."""
-        # Return mock transcription for now
-        return f"[Mock transcription] This is a simulated transcription of the audio file at {audio_url}. The candidate spoke clearly about their experience and provided detailed examples."
 
     async def analyze_speech_quality(self, audio_url: str, transcript: str) -> Dict[str, Any]:
         """Analyze speech quality metrics from audio."""
@@ -350,11 +272,33 @@ class AIService:
     async def generate_follow_up_question(
         self, 
         previous_question: str, 
-        user_response: str,
-        interview_context: Dict[str, Any]
+        interview_context: Dict[str, Any],
+        user_response: Optional[str] = "I don't not know",
     ) -> Dict[str, Any]:
-        """Generate contextual follow-up questions."""
-        # Mock follow-up generation based on response
+        """Generate a contextual follow-up question using AI if available, else fallback to rule-based."""
+        if self.llm:
+            try:
+                # Compose prompt for LLM
+                from .prompts import followup_prompt
+                json_output_parser = JsonOutputParser()
+                chain = followup_prompt | self.llm | json_output_parser
+                result = await chain.ainvoke({
+                    "previous_question": previous_question,
+                    "user_response": user_response,
+                    "interview_context": interview_context
+                }) 
+                print(f"LLM follow-up result type: {type(result)}")
+                content = getattr(result, 'content', result)
+                
+                try:
+                    result_json = json.loads(content)
+                    return result_json
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"⚠️ LLM follow-up generation failed: {e}")
+                print("Falling back to rule-based follow-up...")
+        # Fallback: simple rule-based follow-up
         follow_ups = [
             "Can you provide a specific example of that?",
             "How did you overcome the challenges you mentioned?",
@@ -362,9 +306,8 @@ class AIService:
             "How would you approach this differently now?",
             "What did you learn from that experience?"
         ]
-        
         return {
-            "question": follow_ups[0],  # In real implementation, use AI to select best follow-up
+            "question": follow_ups[0],
             "type": "follow_up",
             "context": f"Following up on: {previous_question[:50]}...",
             "reasoning": "Seeking specific examples to validate claimed experience"
@@ -747,74 +690,41 @@ class AIService:
         }
 
     # Direct Audio Data Processing Methods (for real-time streaming)
-    
     async def transcribe_audio_data(self, audio_data: bytes, audio_format: str = "wav") -> str:
-        """Transcribe audio data directly using Google Cloud Speech-to-Text."""
+        """Transcribe audio data using custom SpeechToText service with base64 input."""
         try:
-            if not self.speech_client:
+            stt_service = get_stt_service()
+
+            if not stt_service:
+                print("⚠️ STT service not available - please check configuration")
                 return "[Audio transcription not available - please type your response]"
-            
-            # Audio format should already be normalized to 16kHz mono WAV by the audio_processing utility
-            # But we'll still handle different formats for robustness
-            
-            # Configure recognition based on audio format
-            if audio_format.lower() in ["webm", "webm-opus"]:
-                encoding = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
-                sample_rate = 48000
-            elif audio_format.lower() == "mp3":
-                encoding = speech.RecognitionConfig.AudioEncoding.MP3
-                sample_rate = 16000
-            elif audio_format.lower() == "wav":
-                encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
-                sample_rate = 16000  # Our audio_processing utility normalizes to 16kHz
-            elif audio_format.lower() == "ogg":
-                encoding = speech.RecognitionConfig.AudioEncoding.OGG_OPUS
-                sample_rate = 48000
-            else:
-                # Default to LINEAR16 (WAV) since our audio processor normalizes to WAV
-                encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
-                sample_rate = 16000
-            
-            # Create audio object from bytes
-            audio = speech.RecognitionAudio(content=audio_data)
-            
-            # Configure recognition
-            config = speech.RecognitionConfig(
-                encoding=encoding,
-                sample_rate_hertz=sample_rate,
-                language_code="en-US",
-                enable_automatic_punctuation=True,
-                enable_word_time_offsets=True,
-                enable_word_confidence=True,
-                model="latest_long"  # Better for interview responses
-            )
-            
-            # Perform transcription
-            response = self.speech_client.recognize(config=config, audio=audio)
-            
-            # Extract transcript with confidence
-            transcript_parts = []
-            total_confidence = 0
-            part_count = 0
-            
-            for result in response.results:
-                alternative = result.alternatives[0]
-                transcript_parts.append(alternative.transcript)
-                total_confidence += alternative.confidence
-                part_count += 1
-            
-            transcript = " ".join(transcript_parts).strip()
-            avg_confidence = total_confidence / part_count if part_count > 0 else 0
-            
-            # Return transcript or fallback message
+            print("stt_service",stt_service)
+
+            # Convert audio data to base64
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+
+            # Get Google API response
+            response = stt_service.convert_base64_to_text(audio_base64, input_format=audio_format)
+            # Extract transcript from response
+            transcript = stt_service.get_transcript(response)
+            # Compute average confidence for robustness (optional)
+            confidences = [
+                alt.confidence
+                for result in response.results
+                for alt in [result.alternatives[0]]
+                if hasattr(alt, "confidence")
+                ]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
             if transcript and avg_confidence > 0.5:
-                return transcript
+                return transcript.strip()
             else:
                 return "[Audio unclear - please speak more clearly or type your response]"
-                
+
         except Exception as e:
             print(f"⚠️ Audio transcription error: {e}")
             return "[Audio transcription failed - please type your response]"
+
 
     async def analyze_speech_quality_data(self, audio_data: bytes, transcript: str, audio_format: str = "webm") -> Dict[str, Any]:
         """Analyze speech quality from audio data."""
@@ -993,3 +903,8 @@ class AIService:
         else:
             return "neutral"
 
+if __name__ == "__main__":
+    # Example usage
+    service = AIService()
+    questions = asyncio.run(service.generate_interview_question("Software Engineer", "technical", 'medium', 5, "google"))
+    print("Generated Questions:", questions)

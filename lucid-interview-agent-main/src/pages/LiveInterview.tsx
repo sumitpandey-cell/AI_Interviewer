@@ -1,15 +1,26 @@
-
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Square, FileText, RotateCcw, BookmarkMinus, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent } from '@/components/ui/card';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import VoiceWaveform from '@/components/interview/VoiceWaveform';
-import TranscriptPanel from '@/components/interview/TranscriptPanel';
 import InterviewTimer from '@/components/interview/InterviewTimer';
+import { InterviewWebSocketConnection, AuthAPI } from '@/lib/api';
+import { useToast } from '@/components/ui/use-toast';
 import SilenceDetector from '@/components/interview/SilenceDetector';
-import EndInterviewModal from '@/components/interview/EndInterviewModal';
+import { useGoogleCloudTTS } from '@/components/interview/audio/useGoogleCloudTTS.simplified';
+import { useAppDispatch, useAppSelector } from '@/store/hooks';
+import {
+  fetchInterview,
+  startInterview,
+  submitResponse,
+  retryQuestion,
+  setCurrentQuestion,
+  setAudioData,
+  setWorkflowState,
+  clearCurrentInterview
+} from '@/store/slices/interviewSlice';
 
 interface TranscriptEntry {
   speaker: 'AI' | 'User' | 'System';
@@ -19,282 +30,504 @@ interface TranscriptEntry {
 
 const LiveInterview = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { toast } = useToast();
+  const dispatch = useAppDispatch();
+
+  // Get state from Redux
+  const {
+    currentInterview,
+    interviewSession,
+    currentQuestion,
+    currentResponse,
+    loading,
+    error
+  } = useAppSelector(state => state.interview);
+
+  // Local state that doesn't need to be in Redux
   const [isMuted, setIsMuted] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
-  const [isRecording, setIsRecording] = useState(true);
-  const [currentQuestion, setCurrentQuestion] = useState("Tell me about yourself and why you're interested in this position.");
-  const [questionProgress, setQuestionProgress] = useState(1);
-  const [totalQuestions] = useState(8);
+  const [isRecording, setIsRecording] = useState(false);
+  const [questionProgress, setQuestionProgress] = useState(0);
+  const [totalQuestions, setTotalQuestions] = useState(0);
   const [showEndModal, setShowEndModal] = useState(false);
   const [interviewDuration, setInterviewDuration] = useState(0);
   const [isAiThinking, setIsAiThinking] = useState(false);
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([
-    { speaker: 'AI', text: "Welcome! I'm your AI interviewer today. Let's begin with our first question.", timestamp: new Date() },
-  ]);
+  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [interviewCompleted, setInterviewCompleted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
-  // Mock questions for demo
-  const questions = [
-    "Tell me about yourself and why you're interested in this position.",
-    "What are your greatest strengths and how do they apply to this role?",
-    "Describe a challenging project you've worked on recently.",
-    "How do you handle working under pressure and tight deadlines?",
-    "Where do you see yourself in 5 years?",
-    "What questions do you have about our company or this role?",
-    "Describe a time when you had to learn a new technology quickly.",
-    "Thank you for your time. Do you have any final thoughts to share?"
-  ];
+  // Derived from Redux state
+  const sessionToken = interviewSession?.session_token || '';
+  const interviewId = currentInterview?.id || null;
+  const interviewPosition = currentInterview?.position || '';
+  const interviewCompany = currentInterview?.company_name || '';
+  const currentAudioData = interviewSession?.audio_data || null;
 
+  const wsConnection = useRef<InterviewWebSocketConnection | null>(null);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const mediaChunks = useRef<Blob[]>([]);
+  const audioContext = useRef<AudioContext | null>(null);
+  const analyser = useRef<AnalyserNode | null>(null);
+
+  // Use simplified Google Cloud TTS for audio playback
+  const { play: playGoogleCloudTTS, isSpeaking: isTTSSpeaking, stop: stopGoogleCloudTTS } = useGoogleCloudTTS();
+
+  // Track when AI has finished speaking to auto-start recording
   useEffect(() => {
-    const timer = setInterval(() => {
-      setInterviewDuration(prev => prev + 1);
-    }, 1000);
+    if (!isTTSSpeaking && !isRecording && !isAiThinking && !interviewCompleted && currentQuestion) {
+      // AI has stopped speaking and we're not recording - auto-start recording after a brief delay
+      const timer = setTimeout(() => {
+        startAudioRecording();
+      }, 100); // Small delay for better UX
 
-    return () => clearInterval(timer);
-  }, []);
+      return () => clearTimeout(timer);
+    }
+  }, [isTTSSpeaking, isRecording, isAiThinking, interviewCompleted]);
 
-  const handleMuteToggle = () => {
-    setIsMuted(!isMuted);
-  };
+  // Enhanced audio playback helper function - ONLY use Google Cloud TTS
+  const playAudioFromBackend = (audioData: any, fallbackText?: string) => {
+    // Check if audioData exists and has the expected structure
+    if (audioData && typeof audioData === 'object') {
+      if (audioData.audio) {
+        // First ensure any recording is stopped when AI starts speaking
+        if (isRecording) {
+          stopAudioRecording();
+        }
 
-  const handleEndInterview = () => {
-    setShowEndModal(true);
-    setIsRecording(false);
-  };
+        // Set speaking state for UI feedback
+        setIsSpeaking(true);
 
-  const handleRetryQuestion = () => {
-    setIsAiThinking(true);
-    setTimeout(() => {
-      setIsAiThinking(false);
-      // Add to transcript
-      setTranscript(prev => [...prev, {
-        speaker: 'AI',
-        text: `Let me rephrase that: ${currentQuestion}`,
-        timestamp: new Date()
-      }]);
-    }, 2000);
-  };
+        // Use useGoogleCloudTTS hook to play audio with the audio data
+        const success = playGoogleCloudTTS(audioData);
 
-  const handleNextQuestion = () => {
-    if (questionProgress < totalQuestions) {
-      setIsAiThinking(true);
-      setTimeout(() => {
-        const nextIndex = questionProgress;
-        setCurrentQuestion(questions[nextIndex]);
-        setQuestionProgress(prev => prev + 1);
-        setIsAiThinking(false);
-        
-        setTranscript(prev => [...prev, {
-          speaker: 'AI',
-          text: questions[nextIndex],
-          timestamp: new Date()
-        }]);
-      }, 3000);
+        if (!success) {
+          // Log warning if Google Cloud TTS fails
+          console.warn("Failed to play Google Cloud TTS audio");
+          setIsSpeaking(false);
+        }
+
+        return success;
+      } else {
+        console.warn("audioData object exists but has no audio property:", JSON.stringify(audioData));
+      }
     } else {
-      handleEndInterview();
+      console.warn("Invalid audioData received:", audioData);
+    }
+
+    if (fallbackText) {
+      console.warn("No valid Google Cloud TTS audio received from backend");
+      toast({
+        variant: "destructive",
+        title: "Audio Playback Issue",
+        description: "Using text mode only for this question. Audio will be re-enabled for the next question.",
+      });
+    }
+
+    return false;
+  };
+
+  // Initialize interview from URL params or navigate back to dashboard
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const id = params.get('id');
+
+    if (!id || !AuthAPI.isAuthenticated()) {
+      toast({
+        variant: "destructive",
+        title: "Invalid interview session",
+        description: "Please select an interview from the dashboard.",
+      });
+      navigate('/dashboard');
+      return;
+    }
+
+    const interviewIdNum = parseInt(id, 10);
+
+    // Use Redux to fetch interview details and start it
+    const initializeInterview = async () => {
+      try {
+        // First fetch the interview details
+        await dispatch(fetchInterview(interviewIdNum)).unwrap();
+
+        // Then start the interview
+        const startResult = await dispatch(startInterview(interviewIdNum)).unwrap();
+
+        console.log('Start interview result from Redux:', startResult);
+        console.log('Audio data from backend:', startResult.audio_data); // Debug log audio data
+
+        // Update workflow state in Redux store
+        if (startResult.workflow_state) {
+          dispatch(setWorkflowState(startResult.workflow_state));
+          setTotalQuestions(startResult.workflow_state.total_questions || 5);
+          setQuestionProgress(1);
+        }
+
+        // Play audio from backend
+        playAudioFromBackend(startResult.audio_data);
+        console.log("))))))))))))))))))))))))))))))))))))))))))))))))))))))",startResult.audio_data);
+
+        // Setup WebSocket connection
+        await setupWebSocket(startResult.session_token);
+
+      } catch (error) {
+        console.error('Failed to start interview:', error);
+        toast({
+          variant: "destructive",
+          title: "Failed to start interview",
+          description: error instanceof Error ? (error as Error).message : "Please try again later.",
+        });
+        navigate('/dashboard');
+      }
+    };
+
+    initializeInterview();
+
+    // Cleanup function
+    return () => {
+      stopAudioRecording();
+      if (wsConnection.current) {
+        wsConnection.current.close();
+      }
+      stopGoogleCloudTTS();
+
+      // Clear interview state when leaving page
+      dispatch(clearCurrentInterview());
+    };
+  }, [dispatch, location.search, navigate, toast]);
+
+  // Setup WebSocket connection for audio streaming
+  const setupWebSocket = async (token: string) => {
+    if (wsConnection.current) {
+      wsConnection.current.close();
+    }
+
+    try {
+
+      wsConnection.current = new InterviewWebSocketConnection(token);
+
+      // Set up WebSocket event handlers
+      wsConnection.current.on('open', () => {
+      });
+
+      wsConnection.current.on('message', (data: any) => {
+
+        // Handle different message types
+        if (data.type === 'start_streaming') {
+          startAudioRecording();
+        } else if (data.type === 'stop_streaming') {
+          stopAudioRecording();
+        } else if (data.type === 'ai_thinking') {
+          setIsAiThinking(true);
+        }
+      });
+
+      wsConnection.current.on('transcript', (text: string) => {
+        // Add to transcript
+        setTranscript(prev => [
+          ...prev,
+          {
+            speaker: 'User',
+            text: text,
+            timestamp: new Date()
+          }
+        ]);
+      });
+
+      wsConnection.current.on('error', (error: any) => {
+        console.error("WebSocket error:", error);
+      });
+
+      wsConnection.current.on('close', () => {
+      });
+
+      await wsConnection.current.connect();
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Connection issue",
+        description: "Failed to establish real-time connection. Trying to recover...",
+      });
     }
   };
 
-  const handleMarkDifficult = () => {
-    // Add visual feedback for marking question as difficult
-    setTranscript(prev => [...prev, {
-      speaker: 'System',
-      text: '📝 Question marked as difficult for review',
-      timestamp: new Date()
-    }]);
+  // Start audio recording
+  const startAudioRecording = async () => {
+    if (isRecording || isMuted) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // Create audio context and analyzer
+      if (!audioContext.current) {
+        audioContext.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const source = audioContext.current.createMediaStreamSource(stream);
+        analyser.current = audioContext.current.createAnalyser();
+        analyser.current.fftSize = 256;
+        source.connect(analyser.current);
+      }
+
+      // Create media recorder
+      mediaRecorder.current = new MediaRecorder(stream);
+      mediaChunks.current = [];
+
+      mediaRecorder.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          mediaChunks.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.current.onstop = async () => {
+        // Create audio blob from chunks
+        const audioBlob = new Blob(mediaChunks.current, { type: 'audio/webm' });
+        mediaChunks.current = [];
+
+        // Convert to base64
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64Audio = (reader.result as string).split(',')[1]; // Remove data URL prefix
+          console.log('Base64 audio data:', base64Audio); // Debug log
+
+          if (base64Audio && sessionToken) {
+            try {
+              setIsAiThinking(true);
+              // Use Redux to submit response
+              const result = await dispatch(submitResponse({
+                session_token: sessionToken,
+                audio_data: base64Audio
+              })).unwrap();
+              console.log('Response from submitResponse:', result);
+              setIsAiThinking(false);
+
+              if (result.is_completed) {
+                handleInterviewComplete(result.feedback);
+              } else {
+                // Update progress
+                if (result.workflow_state) {
+                  dispatch(setWorkflowState(result.workflow_state));
+
+                  // Update progress metrics
+                  const progress = result.workflow_state.current_question || questionProgress + 1;
+                  setQuestionProgress(progress);
+                } 
+                
+
+                // Extract question text
+                let questionText = '';
+                if (typeof result.next_question === 'string') {
+                  questionText = result.next_question;
+                } else if (result.next_question && typeof result.next_question === 'object') {
+                  questionText = result.next_question.question ||
+                    JSON.stringify(result.next_question);
+                }
+
+                // Update Redux state
+                dispatch(setCurrentQuestion(questionText));
+                dispatch(setAudioData(result.audio_data));
+
+                // Add AI response to transcript
+                setTranscript(prev => [
+                  ...prev,
+                  {
+                    speaker: 'AI',
+                    text: questionText,
+                    timestamp: new Date()
+                  }
+                ]);
+
+                // Play Google Cloud TTS audio
+                console.log('Playing audio from backend:', result.audio_data);
+                playAudioFromBackend(result.audio_data.base64);
+              }
+            } catch (error) {
+              console.error('Error submitting response:', error);
+              setIsAiThinking(false);
+
+              toast({
+                variant: "destructive",
+                title: "Failed to process response",
+                description: "There was an error processing your answer. Please try again.",
+              });
+            }
+          }
+
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+
+      // Start recording
+      mediaRecorder.current.start(1000);
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      toast({
+        variant: "destructive",
+        title: "Microphone access denied",
+        description: "Please enable microphone access to continue the interview.",
+      });
+    }
   };
 
-  const progressPercentage = (questionProgress / totalQuestions) * 100;
+  // Stop audio recording
+  const stopAudioRecording = () => {
+    if (!isRecording || !mediaRecorder.current) return;
 
+    try {
+      if (mediaRecorder.current.state !== 'inactive') {
+        mediaRecorder.current.stop();
+      }
+
+      // Stop all tracks
+      mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
+
+      setIsRecording(false);
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+    }
+  };
+
+  // Handle interview complete
+  const handleInterviewComplete = (feedback: any) => {
+    stopAudioRecording();
+    if (wsConnection.current) {
+      wsConnection.current.close();
+    }
+
+    setInterviewCompleted(true);
+    setTranscript(prev => [
+      ...prev,
+      {
+        speaker: 'System',
+        text: 'Interview completed. Thank you for your participation.',
+        timestamp: new Date()
+      }
+    ]);
+
+    toast({
+      title: "Interview Completed",
+      description: "Thank you for completing the interview!",
+    });
+
+    // Show end modal with feedback
+    setShowEndModal(true);
+  };
+
+  // Handle going back to dashboard
+  const handleGoToDashboard = () => {
+    navigate('/dashboard');
+  };
+
+  const handleSilenceDetection = () => {
+    if (isRecording) {
+      stopAudioRecording();
+      setIsAiThinking(false);
+      setIsSpeaking(false);
+      setTranscript(prev => [
+        ...prev,
+        {
+          speaker: 'System',
+          text: 'Silence detected. Please respond to continue.',
+          timestamp: new Date()
+        }
+      ]);
+    }
+  }
+
+  // Main interview UI
   return (
-    <div className="min-h-screen bg-[#1A1C23] text-white flex flex-col">
-      {/* Enhanced Header */}
-      <header className="bg-[#262933]/80 backdrop-blur-xl border-b border-primary/10 px-6 py-4 shadow-2xl">
-        <div className="flex items-center justify-between max-w-7xl mx-auto">
+    <div className="h-screen bg-dark-bg flex flex-col">
+      {/* Header bar */}
+      <header className="bg-card-bg/50 backdrop-blur-md border-b border-primary/20 px-6 py-2">
+        <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <Button
               variant="ghost"
-              size="icon"
-              onClick={() => navigate('/dashboard')}
-              className="text-muted hover:text-white hover:bg-primary/10 transition-all duration-300"
+              onClick={handleGoToDashboard}
+              className="text-white"
             >
-              <ArrowLeft className="h-5 w-5" />
+              <ArrowLeft className="mr-2 h-4 w-4" /> Back to Dashboard
             </Button>
-            <div className="space-y-1">
-              <h1 className="text-xl font-bold text-white flex items-center space-x-3">
-                <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
-                <span>AI Interview Session</span>
-              </h1>
-              <p className="text-sm text-cyan-400 font-medium">Frontend Developer - TCS</p>
-            </div>
           </div>
-          
-          <div className="flex items-center space-x-6">
-            <InterviewTimer duration={interviewDuration} />
-            {isRecording && (
-              <div className="flex items-center space-x-3 bg-red-500/10 px-3 py-2 rounded-full border border-red-500/20">
-                <div className="relative">
-                  <div className="w-3 h-3 bg-red-400 rounded-full animate-pulse"></div>
-                  <div className="absolute inset-0 w-3 h-3 bg-red-400 rounded-full animate-ping opacity-75"></div>
-                </div>
-                <span className="text-sm font-medium text-red-400">Recording</span>
-              </div>
-            )}
+
+          <div>
+            {/* <h1 className="text-2xl font-lovable text-white">
+              {interviewPosition} Interview {interviewCompany ? ` - ${interviewCompany}` : ''}
+            </h1> */}
+          </div>
+
+          <div className="flex items-center space-x-4">
+            <InterviewTimer
+              onUpdate={(duration) => setInterviewDuration(duration)}
+              isPaused={interviewCompleted}
+            />
           </div>
         </div>
       </header>
 
-      {/* Enhanced Progress Bar */}
-      <div className="px-6 py-4 bg-[#262933]/40 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-3">
-              <span className="text-sm font-medium text-white">Question {questionProgress} of {totalQuestions}</span>
-              <div className="flex space-x-1">
-                {Array.from({ length: totalQuestions }).map((_, index) => (
-                  <div
-                    key={index}
-                    className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                      index < questionProgress ? 'bg-primary' : 'bg-primary/20'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-            <span className="text-sm font-medium text-cyan-400">{Math.round(progressPercentage)}% Complete</span>
-          </div>
-          <Progress 
-            value={progressPercentage} 
-            className="h-2 bg-primary/10 border border-primary/20 rounded-full overflow-hidden"
-          />
+      {/* Progress bar */}
+      <div className="px-6 pt-2">
+        <div className="flex items-center justify-between text-sm text-white/60">
+          {/* <span>Question {questionProgress} of {totalQuestions}</span> */}
+          {/* <span>Progress: {Math.round((questionProgress / totalQuestions) * 100)}%</span> */}
         </div>
+        {/* <Progress
+          value={(questionProgress / totalQuestions) * 100}
+          className="h-1 mt-1"
+        /> */}
       </div>
 
-      {/* Main Content */}
-      <main className="flex-1 flex">
-        <div className="flex-1 flex flex-col">
-          {/* Enhanced Interview Interface */}
-          <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-8">
-            {/* Current Question Panel - Glassmorphism */}
-            <Card className="w-full max-w-4xl bg-[#262933]/60 backdrop-blur-xl border border-primary/20 shadow-2xl">
-              <CardContent className="p-8 text-center">
-                <div className="flex items-center justify-center space-x-2 mb-4">
-                  <div className="w-1 h-1 bg-primary rounded-full animate-pulse"></div>
-                  <h2 className="text-xl font-bold text-white">Current Question</h2>
-                  <div className="w-1 h-1 bg-primary rounded-full animate-pulse"></div>
-                </div>
-                
-                <div className="relative">
-                  {isAiThinking ? (
-                    <div className="flex items-center justify-center space-x-3 py-4">
-                      <div className="flex space-x-1">
-                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
-                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-                      </div>
-                      <span className="text-primary font-medium">AI is preparing your next question...</span>
+      {/* Main content */}
+      <div className="flex-1 flex overflow-hidden p-6">
+        <div className={`flex-1 flex flex-col ${showTranscript ? 'mr-4' : ''}`}>
+          {/* Question display card */}
+          <Card className="bg-card-bg border-primary/20 mb-6 text-white flex-1">
+            <CardContent className="p-6 flex flex-col h-full justify-between">
+              <div className="space-y-6 flex-1 overflow-y-auto">
+                {/* Audio status indicator */}
+                <div className="flex items-center space-x-2 text-muted">
+                  {isSpeaking ? (
+                    <div className="flex items-center text-secondary">
+                      <span className="mr-2">●</span> AI is speaking
+                    </div>
+                  ) : isRecording ? (
+                    <div className="flex items-center text-red-500">
+                      <span className="mr-2">●</span> Recording
                     </div>
                   ) : (
-                    <p className="text-lg text-gray-200 leading-relaxed font-medium">
-                      {currentQuestion}
-                    </p>
+                    <div className="flex items-center">
+                      <span className="mr-2">○</span> Waiting for response
+                    </div>
                   )}
                 </div>
-              </CardContent>
-            </Card>
 
-            {/* Enhanced Voice Waveform */}
-            <VoiceWaveform isMuted={isMuted} isActive={!isAiThinking} />
+                {/* Voice waveform */}
+                <div className="h-24">
+                  {isRecording && !isMuted && (
+                    <VoiceWaveform
+                      isActive={isRecording && !isSpeaking && !interviewCompleted}
+                      isMuted={isMuted}
+                    />
+                  )}
+                </div>
 
-            {/* Subtitle */}
-            <p className="text-muted text-center max-w-md">
-              {isMuted ? 'Click unmute to continue your interview' : 'Speak when ready — your voice is being recorded'}
-            </p>
-
-            {/* Silence Detector */}
-            <SilenceDetector onTimeout={handleNextQuestion} isActive={!isMuted && !isAiThinking} />
-          </div>
-
-          {/* Enhanced Control Toolbar */}
-          <div className="bg-[#262933]/60 backdrop-blur-xl border-t border-primary/10 p-6 shadow-2xl">
-            <div className="flex items-center justify-center space-x-4">
-              <Button
-                variant={isMuted ? "default" : "outline"}
-                size="lg"
-                onClick={handleMuteToggle}
-                className={`transition-all duration-300 hover:scale-105 ${
-                  isMuted 
-                    ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg' 
-                    : 'border-primary/30 hover:border-primary/60 hover:bg-primary/10'
-                }`}
-              >
-                {isMuted ? <MicOff className="h-5 w-5 mr-2" /> : <Mic className="h-5 w-5 mr-2" />}
-                {isMuted ? 'Unmute' : 'Mute'}
-              </Button>
-
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={() => setShowTranscript(!showTranscript)}
-                className="border-primary/30 hover:border-primary/60 hover:bg-primary/10 transition-all duration-300 hover:scale-105"
-              >
-                <FileText className="h-5 w-5 mr-2" />
-                Transcript
-              </Button>
-
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={handleRetryQuestion}
-                className="border-primary/30 hover:border-primary/60 hover:bg-primary/10 transition-all duration-300 hover:scale-105"
-                disabled={isAiThinking}
-              >
-                <RotateCcw className="h-5 w-5 mr-2" />
-                Retry
-              </Button>
-
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={handleMarkDifficult}
-                className="border-yellow-500/30 hover:border-yellow-500/60 text-yellow-400 hover:bg-yellow-500/10 transition-all duration-300 hover:scale-105"
-              >
-                <BookmarkMinus className="h-5 w-5 mr-2" />
-                Mark Difficult
-              </Button>
-
-              <Button
-                variant="destructive"
-                size="lg"
-                onClick={handleEndInterview}
-                className="bg-red-500/20 hover:bg-red-500/30 text-red-400 border-red-500/30 hover:border-red-500/60 transition-all duration-300 hover:scale-105"
-              >
-                <Square className="h-5 w-5 mr-2" />
-                End Interview
-              </Button>
-            </div>
-          </div>
+                {/* Enhanced Silence detector */}
+                {isRecording && !isMuted && (
+                  <SilenceDetector
+                    isRecording={isRecording}
+                    onSilence={handleSilenceDetection}
+                    silenceThreshold={2}
+                    silenceDelay={2000}
+                    zcrThreshold={0.1} // ZCR threshold for speech
+                    speechFreqRange={[80, 4000]} // Focus on speech frequencies
+                  />
+                )}
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Enhanced Transcript Panel */}
-        {showTranscript && (
-          <div className="animate-slide-in-right">
-            <TranscriptPanel 
-              transcript={transcript} 
-              onClose={() => setShowTranscript(false)}
-            />
-          </div>
-        )}
-      </main>
+      </div>
 
-      {/* End Interview Modal */}
-      <EndInterviewModal 
-        isOpen={showEndModal}
-        onClose={() => setShowEndModal(false)}
-        duration={interviewDuration}
-        questionsAnswered={questionProgress}
-        totalQuestions={totalQuestions}
-        onGoToDashboard={() => navigate('/dashboard')}
-      />
     </div>
   );
 };

@@ -2,32 +2,44 @@
 import { Play, TrendingUp, Award, Clock } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 
-const DashboardStats = () => {
+interface DashboardStatsProps {
+  totalInterviews: number;
+  completedInterviews: number;
+  averageScore: number;
+  totalQuestionsAnswered: number;
+}
+
+const DashboardStats = ({
+  totalInterviews = 0,
+  completedInterviews = 0,
+  averageScore = 0,
+  totalQuestionsAnswered = 0
+}: DashboardStatsProps) => {
   const stats = [
     {
       title: 'Total Interviews',
-      value: '47',
+      value: totalInterviews.toString(),
       icon: Play,
       color: 'text-primary',
       bgColor: 'bg-primary/20'
     },
     {
       title: 'Average Score',
-      value: '8.2/10',
+      value: `${(averageScore / 10).toFixed(1)}/10`,
       icon: TrendingUp,
       color: 'text-secondary',
       bgColor: 'bg-secondary/20'
     },
     {
-      title: 'Streak Days',
-      value: '12',
+      title: 'Completed',
+      value: completedInterviews.toString(),
       icon: Award,
       color: 'text-orange-500',
       bgColor: 'bg-orange-500/20'
     },
     {
-      title: 'Time Saved',
-      value: '24h',
+      title: 'Questions Answered',
+      value: totalQuestionsAnswered.toString(),
       icon: Clock,
       color: 'text-green-500',
       bgColor: 'bg-green-500/20'

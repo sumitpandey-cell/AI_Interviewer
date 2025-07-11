@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .auth.router import router as auth_router
 from .interviews.router import router as interviews_router
+from .interviews.retry_question import router as retry_question_router
 from .websocket.router import router as websocket_router
 from .config import settings
 
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(auth_router, prefix="/auth", tags=["authentication"])
     app.include_router(interviews_router, prefix="/interviews", tags=["interviews"])
+    app.include_router(retry_question_router, prefix="/interviews", tags=["interviews"])
     app.include_router(websocket_router, prefix="/ws", tags=["websocket"])
 
     @app.get("/")

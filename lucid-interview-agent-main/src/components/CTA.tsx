@@ -2,7 +2,11 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight, CheckCircle } from "lucide-react";
 
-const CTA = () => {
+interface CTAProps {
+  onCtaClick?: () => void;
+}
+
+const CTA = ({ onCtaClick }: CTAProps) => {
   return (
     <section className="py-20 bg-gradient-to-br from-primary/10 via-dark-bg to-secondary/10 relative">
       <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-transparent to-secondary/20"></div>
@@ -22,7 +26,8 @@ const CTA = () => {
           
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button 
-              size="lg" 
+              size="lg"
+              onClick={onCtaClick}
               className="bg-primary hover:bg-primary/90 text-white px-8 py-4 text-lg font-semibold"
             >
               Start Your Free Trial

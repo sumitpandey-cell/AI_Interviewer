@@ -13,6 +13,7 @@ from .schemas import LangGraphState
 from ..ai.workflow import interview_workflow
 from ..auth.models import User
 from ..utilities import process_audio_data
+import base64
 
 
 def clean_workflow_state_for_db(workflow_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -32,10 +33,13 @@ def clean_workflow_state_for_db(workflow_state: Dict[str, Any]) -> Dict[str, Any
             # Don't store raw bytes in JSON - return metadata instead
             return f"<binary_data:{len(value)}_bytes>" if value else None
         elif isinstance(value, str):
-            # Check if the string might contain binary data and avoid UTF-8 issues
+            # Defensive: If string looks like binary (non-printable), don't try to decode
             try:
-                # Test if string can be safely encoded/decoded
                 value.encode('utf-8').decode('utf-8')
+                # If string is printable, return as is
+                if any(ord(c) < 32 or ord(c) > 126 for c in value):
+                    # Contains non-printable chars, treat as binary
+                    return f"<possibly_binary_string:{len(value)}_chars>"
                 return value
             except (UnicodeDecodeError, UnicodeEncodeError):
                 # If there are encoding issues, return safe metadata
@@ -74,6 +78,7 @@ class InterviewService:
             duration_minutes=interview_data.duration_minutes,
             status="created"
         )
+        print("db_interview:", db_interview)
         
         self.db.add(db_interview)
         self.db.commit()
@@ -109,30 +114,55 @@ class InterviewService:
         # Get the interview
         interview = self.get_interview(interview_id, user_id)
         # Check for existing active session if the interview is in_progress
-        if interview.status == "in_progress":
+        if str(interview.status) == "paused":
             # Get the active session
             session = self.db.query(models.InterviewSession).filter(
                 models.InterviewSession.interview_id == interview_id,
                 models.InterviewSession.is_active == True
             ).order_by(models.InterviewSession.created_at.desc()).first()
-            
+
             if session:
-                # Return the existing session
+                # Update state to resume
                 state_dict = session.workflow_state or {}
-                return {
-                    "session_token": session.session_token,
-                    "first_question": state_dict.get("current_question"),
-                    "workflow_state": state_dict,
-                    "is_resumed": True
-                }
+                print(f"Resuming session with state: {state_dict}")
+                state = LangGraphState(**state_dict)
+            
+            # Resume the interview through workflow
+            state = await interview_workflow.resume_session(state)
+            state = await interview_workflow.present_question(state)
+            
+            # Update session with new state
+            session.workflow_state = clean_workflow_state_for_db(state.model_dump())
+            session.session_status = "resumed"
+            self.db.commit()
+            
+            return {
+                "session_token": session.session_token,
+                "first_question": state.current_question,
+                "audio_data": getattr(state, 'audio_response', None),
+                "workflow_state": state,
+                "is_resumed": True
+            }
         
-        # Only allow starting new sessions for interviews in 'created' status
-        if interview.status != "created":
+        # Check if interview is already in progress
+        if str(interview.status) == "in_progress":
             raise HTTPException(
                 status_code=400,
-                detail=f"Interview cannot be started. Current status: {interview.status}"
+                detail="Interview is already in progress. Please complete or terminate the active session."
             )
-        
+        # Check if interview is completed
+        if str(interview.status) == "completed":
+            raise HTTPException(
+                status_code=400,
+                detail="Interview is already completed. Please start a new interview."
+            )
+        # Check if interview is cancelled
+        if str(interview.status) == "cancelled":
+            raise HTTPException(
+                status_code=400,
+                detail="Interview is cancelled. Please start a new interview."
+            )
+
         # Create session token
         session_token = str(uuid.uuid4())
         
@@ -176,20 +206,30 @@ class InterviewService:
         
         self.db.commit()
         
+        # Debug audio response
+        audio_response = getattr(state, 'audio_response', None)
+        print(f"Audio response exists: {audio_response is not None}")
+        if audio_response:
+            print(f"Audio response keys: {audio_response.keys() if isinstance(audio_response, dict) else 'Not a dict'}")
+            
         return {
             "session_token": session_token,
             "first_question": state.current_question,
-            "workflow_state": state
+            "audio_data": audio_response,  # Include TTS audio data
+            "workflow_state": state,
+            "is_resumed": getattr(state, 'is_resumed', False)
         }
     
     async def submit_response(
         self, 
         session_token: str,
-        response_text: Optional[str] = None,
         audio_data: Optional[Union[bytes, str]] = None
     ) -> Dict[str, Any]:
         """Submit a response to the current question."""
-        
+        # Defensive: Never decode audio_data as UTF-8 here
+        if isinstance(audio_data, bytes):
+            # Do not attempt to decode or print as string
+            pass
         # Get session
         session = self.db.query(models.InterviewSession).filter(
             models.InterviewSession.session_token == session_token,
@@ -201,21 +241,28 @@ class InterviewService:
         
         # Get current state
         state_dict = session.workflow_state or {}
-        state = LangGraphState(**state_dict)
+        # Sanitize questions_generated for Pydantic compatibility
+        if "questions_generated" in state_dict:
+            for q in state_dict["questions_generated"]:
+                if "expected_points" in q and isinstance(q["expected_points"], list):
+                    q["expected_points"] = ", ".join(str(x) for x in q["expected_points"])
+                if "evaluation_criteria" in q and isinstance(q["evaluation_criteria"], dict):
+                    q["evaluation_criteria"] = str(q["evaluation_criteria"])
+        # Only instantiate LangGraphState if required fields are present
+        required_fields = ["interview_id", "session_token", "current_step", "user_id", "interview_type", "position"]
+        if all(field in state_dict and state_dict[field] is not None for field in required_fields):
+            state = LangGraphState(**state_dict)
+        else:
+            raise HTTPException(status_code=500, detail="Workflow state is missing required fields.")
         
-        # Update state with user response
-        state.user_response = response_text
         
-        # Process audio data using the new robust audio processing
+
         if audio_data:
             try:
                 # Use the new audio processor to handle both base64 strings and bytes
-                processed_audio, audio_metadata = process_audio_data(audio_data)
-                
-                # Update state with processed audio and metadata
+                processed_audio, processed_audio_format = process_audio_data(audio_data)
                 state.audio_data = processed_audio
-                state.audio_format = audio_metadata["detected_format"]
-                state.audio_metadata = audio_metadata
+                state.audio_format = processed_audio_format.get("detected_format", "unknown")
             except ValueError as e:
                 # Return informative error for invalid audio
                 raise HTTPException(status_code=400, detail=f"Audio processing error: {str(e)}")
@@ -230,14 +277,20 @@ class InterviewService:
         
         # Process the response through workflow
         if audio_data:
+            # process_audio trranscribes audio into text and updates state
+            print("About to call process_audio")
             state = await interview_workflow.process_audio(state)
-        
+            print("Returned from process_audio")
+        else:
+            print("No audio data provided, continuing with text response.")
+
         state = await interview_workflow.evaluate_response(state)
         state = await interview_workflow.generate_feedback(state)
         state = await interview_workflow.determine_next_step(state)
         
         # Check if we should continue or complete
         if state.should_continue and not state.error_message:
+            print("********Presenting next question********")
             state = await interview_workflow.present_question(state)
         else:
             state = await interview_workflow.complete_interview(state)
@@ -253,6 +306,9 @@ class InterviewService:
             session.session_status = "completed"
         
         # Update session with new state
+        # Ensure no binary data is stored in workflow_state
+        
+        state.audio_data = None  # Remove any binary audio before saving
         session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         session.current_step = state.current_step
         session.last_activity_at = datetime.now()
@@ -261,8 +317,10 @@ class InterviewService:
         
         # Prepare response
         evaluation = state.ai_evaluation or {}
-        next_question = state.current_question if state.should_continue else None
+        next_question = getattr(state, 'next_question',None) if state.should_continue else None
         
+        # Debug audio response
+        audio_response = getattr(state, 'audio_response', None)
         return {
             "evaluation": {
                 "score": evaluation.get("overall_score", 0),
@@ -271,6 +329,10 @@ class InterviewService:
                 "improvement_suggestions": evaluation.get("improvements", [])
             },
             "next_question": next_question,
+            "question_audio_data": {
+                "base64": audio_response ,
+                "format": state.audio_format if hasattr(state, 'audio_format') else "unknown"
+            },  # TTS audio data (if any)
             "is_completed": not state.should_continue,
             "workflow_state": state
         }

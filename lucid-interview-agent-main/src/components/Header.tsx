@@ -2,10 +2,15 @@
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import SignIn from "./SignIn";
+import { AuthAPI } from "@/lib/api";
 
-const Header = () => {
+interface HeaderProps {
+  onLoginClick?: () => void;
+}
+
+const Header = ({ onLoginClick }: HeaderProps) => {
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -14,6 +19,10 @@ const Header = () => {
     };
 
     window.addEventListener('scroll', handleScroll);
+    
+    // Check authentication status
+    setIsAuthenticated(AuthAPI.isAuthenticated());
+    
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
@@ -48,17 +57,32 @@ const Header = () => {
           </nav>
           
           <div className="flex items-center space-x-4">
-            <SignIn>
-              <Button variant="ghost" className="text-muted hover:text-white hover:bg-primary/10 transition-all duration-300 font-semibold">
-                Sign In
+            {isAuthenticated ? (
+              <Button 
+                onClick={() => navigate('/dashboard')}
+                className="bg-primary hover:bg-primary/90 text-white font-semibold transition-all duration-300 hover:scale-105 hover:shadow-lg"
+              >
+                Dashboard
               </Button>
-            </SignIn>
-            <Button 
-              onClick={() => navigate('/dashboard')}
-              className="bg-primary hover:bg-primary/90 text-white font-semibold transition-all duration-300 hover:scale-105 hover:shadow-lg"
-            >
-              Dashboard
-            </Button>
+            ) : (
+              <>
+                <Button 
+                  variant="ghost" 
+                  onClick={onLoginClick}
+                  className="text-muted hover:text-white hover:bg-primary/10 transition-all duration-300 font-semibold"
+                >
+                  Sign In
+                </Button>
+                <Button 
+                  onClick={() => {
+                    if (onLoginClick) onLoginClick();
+                  }}
+                  className="bg-primary hover:bg-primary/90 text-white font-semibold transition-all duration-300 hover:scale-105 hover:shadow-lg"
+                >
+                  Register
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>

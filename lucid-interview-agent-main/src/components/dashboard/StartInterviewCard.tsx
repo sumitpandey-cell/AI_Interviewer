@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Building, Clock, User, FileText } from 'lucide-react';
+import { Play, Building, Clock, User, FileText, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -7,9 +7,12 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useNavigate } from 'react-router-dom';
+import { InterviewsAPI } from '@/lib/api';
+import { useToast } from '@/components/ui/use-toast';
 
 const StartInterviewCard = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [formData, setFormData] = useState({
     title: 'frontend dev',
     description: 'nothing',
@@ -29,6 +32,7 @@ const StartInterviewCard = () => {
     'DevOps Engineer',
     'Mobile Developer'
   ];
+  console.log('Positions:', positions);
 
   const interviewTypes = [
     { value: 'technical', label: 'Technical', color: 'bg-blue-500' },
@@ -47,10 +51,44 @@ const StartInterviewCard = () => {
     }));
   };
 
-  const handleSubmit = () => {
-    console.log('Interview Data:', formData);
-    // Navigate to live interview page
-    navigate('/interview');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    try {
+      setIsSubmitting(true);
+      console.log('Creating interview with data:', formData);
+      
+      // Create new interview using the API
+      const interview = await InterviewsAPI.createInterview({
+        title: formData.title,
+        description: formData.description,
+        interview_type: formData.interview_type,
+        position: formData.position,
+        company_name: formData.company,
+        // Add other fields as needed by your backend
+      });
+      
+      console.log('Interview created:', interview);
+      
+      toast({
+        title: "Interview created",
+        description: "Starting your interview session now...",
+        duration: 3000,
+      });
+      
+      // Navigate to live interview page with the interview ID
+      navigate(`/interview?id=${interview.id}`);
+    } catch (error) {
+      console.error('Failed to create interview:', error);
+      
+      toast({
+        variant: "destructive",
+        title: "Failed to create interview",
+        description: error instanceof Error ? error.message : "Please try again later.",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -178,12 +216,21 @@ const StartInterviewCard = () => {
         {/* Start Button */}
         <Button 
           onClick={handleSubmit}
-          disabled={!formData.title || !formData.position || !formData.company}
+          disabled={!formData.title || !formData.position || !formData.company || isSubmitting}
           className="w-full bg-gradient-to-r from-primary to-secondary hover:from-primary/90 hover:to-secondary/90 text-white font-semibold py-3 transition-all duration-300 hover:scale-105 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           size="lg"
         >
-          <Play className="h-5 w-5 mr-2" />
-          Start {formData.interview_type.charAt(0).toUpperCase() + formData.interview_type.slice(1)} Interview
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              Preparing Interview...
+            </>
+          ) : (
+            <>
+              <Play className="h-5 w-5 mr-2" />
+              Start {formData.interview_type.charAt(0).toUpperCase() + formData.interview_type.slice(1)} Interview
+            </>
+          )}
         </Button>
 
         {/* Preview Data */}

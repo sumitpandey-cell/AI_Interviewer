@@ -13,7 +13,11 @@ from .service import InterviewService
 from ..database.session import get_db
 from ..auth.dependencies import get_current_active_user
 from ..auth.models import User
+from .retry_question import router as retry_question_router
 
+
+router = APIRouter()
+router.include_router(retry_question_router)  # Include the retry_question router
 
 def safe_restore_state(state_dict):
     """Safely restore LangGraphState from database, cleaning any problematic data."""
@@ -47,9 +51,6 @@ def safe_restore_state(state_dict):
             interview_type=clean_dict.get('interview_type', 'technical'),
             position=clean_dict.get('position', 'Software Engineer')
         )
-
-
-router = APIRouter()
 
 
 @router.post("/", response_model=schemas.InterviewResponse)
@@ -99,7 +100,8 @@ async def start_interview(
     return schemas.InterviewStartResponse(
         session_token=result["session_token"],
         first_question=result["first_question"],
-        workflow_state=result["workflow_state"]
+        audio_data=result.get("audio_data"),  # Include TTS audio data if available
+        workflow_state=result.get("workflow_state", {})
     )
 
 
@@ -113,13 +115,13 @@ async def submit_response(
     service = InterviewService(db)
     result = await service.submit_response(
         session_token=request.session_token,
-        response_text=request.response_text,
         audio_data=request.audio_data
     )
     
     return schemas.SubmitResponseResponse(
         evaluation=schemas.EvaluationResponse(**result["evaluation"]),
         next_question=result["next_question"],
+        audio_data=result.get("audio_data"),  # Include TTS audio data
         is_completed=result["is_completed"],
         workflow_state=result["workflow_state"]
     )
@@ -160,6 +162,7 @@ async def pause_session(
         models.InterviewSession.session_token == session_token,
         models.InterviewSession.is_active == True
     ).first()
+    print(f"Pausing session: {session_token}, found: {session}")
     
     if not session:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -379,6 +382,7 @@ async def process_complete_response(
             "current_score": getattr(state, 'current_average_score', 0),
             "difficulty_adjustment": getattr(state, 'adjustment_message', None),
             "next_question": state.current_question if state.should_continue else None,
+            "audio_data": getattr(state, 'audio_response', None),  # Audio response data
             "is_completed": not state.should_continue,
             "termination_reason": getattr(state, 'termination_reason', None),
             "final_assessment": getattr(state, 'final_assessment', None),

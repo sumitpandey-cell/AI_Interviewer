@@ -2,7 +2,11 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Play, Users, Trophy, Clock } from "lucide-react";
 
-const Hero = () => {
+interface HeroProps {
+  onGetStartedClick?: () => void;
+}
+
+const Hero = ({ onGetStartedClick }: HeroProps) => {
   return (
     <section className="min-h-screen bg-dark-bg pt-20 pb-16 relative overflow-hidden">
       {/* Background gradient effects */}
@@ -32,6 +36,7 @@ const Hero = () => {
             <div className="flex flex-col sm:flex-row gap-4 pt-2">
               <Button 
                 size="lg" 
+                onClick={onGetStartedClick}
                 className="bg-primary hover:bg-primary/90 text-white px-8 py-4 text-lg font-semibold transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-primary/25"
               >
                 Start Free Trial

@@ -8,9 +8,12 @@ from datetime import datetime
 
 from ..interviews.schemas import LangGraphState
 from .service import AIService
-
+from ..utilities.Text_to_speech.tts_service import get_tts_service
 # Create an instance of AIService
 ai_service = AIService()
+
+# Get the TTS service
+tts_service = get_tts_service()
 
 
 class InterviewWorkflow:
@@ -30,17 +33,38 @@ class InterviewWorkflow:
         state.should_continue = True
         
         return state
+    async def resume_session(self, state: LangGraphState) -> LangGraphState:
+        """Resume an existing interview session."""
+        state.current_step = "resume_session"
+        
+        if not state.session_token:
+            state.error_message = "Session token is required to resume"
+            state.should_continue = False
+            return state
+        
+        # Load existing session data from the database or storage
+        
+        # For now, we assume the session is valid and loaded successfully
+        state.should_continue = True
+        
+        # Set initial values if not already set
+        if not hasattr(state, 'current_question_index'):
+            state.current_question_index = 0
+        if not hasattr(state, 'responses_history'):
+            state.responses_history = []
+        
+        return state
     
     async def generate_questions(self, state: LangGraphState) -> LangGraphState:
         """Generate interview questions using AI."""
         state.current_step = "generate_questions"
         
         try:
-            questions = await ai_service.generate_interview_questions(
+            questions = await ai_service.generate_interview_question(
                 position=state.position,
                 interview_type=state.interview_type,
                 difficulty=state.difficulty,
-                num_questions=5
+                number_of_questions=5,
             )
             
             state.questions_generated = questions
@@ -89,13 +113,41 @@ class InterviewWorkflow:
     async def present_question(self, state: LangGraphState) -> LangGraphState:
         """Present the current question to the user."""
         state.current_step = "present_question"
+        # Ensure we have questions and the index is valid
+        if not state.questions_generated or state.current_question_index >= len(state.questions_generated):
+            state.error_message = "No more questions to present or invalid question index"
+            state.should_continue = False
+            return state
         
-        if state.current_question_index < len(state.questions_generated):
+        if(not state.is_follow_up):
+            # If it's a follow-up, use the last question
             current_question = state.questions_generated[state.current_question_index]
             state.current_question = current_question
+            
+        # Generate TTS audio for the current question if TTS service is available
+        if tts_service:
+                    try:
+                        # Extract just the question text for TTS
+                        question_text = current_question.get("question", "")
+                        
+                        if question_text:
+                            # Generate speech audio and add to state
+                            state.audio_response = tts_service.synthesize_speech(
+                                question_text,
+                                language_code="en-US", 
+                                voice_name="en-US-Studio-O",  # Professional sounding voice
+                                speaking_rate=0.95  # Slightly slower for clarity
+                            )
+                            print(f"✅ Generated TTS audio for question #{state.current_question_index + 1}")
+                        else:
+                            print("⚠️ Empty question text, skipping TTS generation")
+                    except Exception as e:
+                        print(f"⚠️ Failed to generate TTS audio: {str(e)}")
+                        # Don't fail the interview if TTS fails
+                        state.audio_response = None
         else:
-            # No more questions, end interview
-            state.should_continue = False
+            state.audio_response = None
+
         
         return state
     
@@ -120,8 +172,9 @@ class InterviewWorkflow:
                 # Transcribe normalized audio data
                 transcript = await ai_service.transcribe_audio_data(
                     audio_data=state.audio_data,
-                    audio_format=audio_format
+                    audio_format=state.audio_format or "wav"  # Default to WAV if not specified
                 )
+                print(f"✅ Transcribed audio response: {transcript[:50]}...")  # Log first 50 chars
                 state.user_response = transcript
                 
                 # Analyze speech quality using audio data
@@ -225,7 +278,9 @@ class InterviewWorkflow:
                             "current_score": score
                         }
                     )
+                    print(f"✅ Generated follow-up question: {follow_up['question'][:50]}...")  # Log first 50 chars
                     state.follow_up_question = follow_up
+                    
                     
         except Exception as e:
             state.error_message = f"Follow-up generation failed: {str(e)}"
@@ -299,15 +354,18 @@ class InterviewWorkflow:
     async def prepare_next_question(self, state: LangGraphState) -> LangGraphState:
         """Prepare the next question or follow-up."""
         state.current_step = "prepare_next_question"
+        print("Preparing next question................")
         
         # If there's a follow-up question, use it
         if hasattr(state, 'follow_up_question') and state.follow_up_question:
+            print("Using follow-up question...,,,,,,,,,,,,,,")
             state.current_question = state.follow_up_question
             state.is_follow_up = True
             # Don't increment question index for follow-ups
         else:
             # Move to next regular question
             state.current_question_index += 1
+            print(f"Moving to next question index: {state.current_question_index}")
             state.is_follow_up = False
             
             if state.current_question_index < len(state.questions_generated):
@@ -318,6 +376,25 @@ class InterviewWorkflow:
         # Clear follow-up for next iteration
         if hasattr(state, 'follow_up_question'):
             delattr(state, 'follow_up_question')
+        
+        # Generate text-to-speech audio if TTS service is available
+        if state.should_continue and tts_service and state.current_question:
+            try:
+                question_text = state.current_question
+                # Extract question text if it's an object
+                if isinstance(question_text, dict) and 'question' in question_text:
+                    question_text = question_text['question']
+                
+                # Only process text questions
+                if isinstance(question_text, str):
+                    audio_result = tts_service.synthesize_speech(question_text)
+                    state.audio_response = audio_result
+                    print(f"✅ Generated audio for question: {question_text[:50]}...")
+                else:
+                    print(f"⚠️ Cannot generate audio for non-string question: {type(question_text)}")
+            except Exception as e:
+                print(f"⚠️ Failed to generate audio for question: {e}")
+                # Continue even if audio generation fails
         
         return state
     

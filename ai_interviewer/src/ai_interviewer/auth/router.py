@@ -7,8 +7,10 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from ..database.session import get_db
-from .schemas import TokenResponse, UserRegister
+from .schemas import TokenResponse, UserRegister, UserResponse
 from .service import AuthService
+from .dependencies import get_current_active_user
+from .models import User
 from ..exceptions import (
     InvalidCredentialsException,
     UserAlreadyExistsException,
@@ -76,3 +78,16 @@ async def token(
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"}
         )
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get information about the currently authenticated user.
+    
+    Returns:
+        UserResponse: User details including id, email, full_name, and is_active
+    """
+    return current_user
