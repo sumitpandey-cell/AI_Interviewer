@@ -52,7 +52,6 @@ def safe_restore_state(state_dict):
             position=clean_dict.get('position', 'Software Engineer')
         )
 
-
 @router.post("/", response_model=schemas.InterviewResponse)
 async def create_interview(
     interview: schemas.InterviewCreate,

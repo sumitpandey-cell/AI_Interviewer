@@ -51,10 +51,10 @@ class AuthService:
     async def authenticate_user(self, email: str, password: str) -> str:
         """Authenticate user and return access token."""
         user = self.db.query(User).filter(User.email == email).first()
-        if not user or not user.is_active:
+        if not user or not bool(user.is_active):
             raise InvalidCredentialsException("Incorrect email or password")
             
-        if not verify_password(password, user.hashed_password):
+        if not verify_password(password, str(user.hashed_password)):
             raise InvalidCredentialsException("Incorrect email or password")
             
         # Create access token
@@ -72,7 +72,7 @@ class AuthService:
         if payload is None:
             return None
         
-        email: str = payload.get("email")
+        email: Optional[str] = payload.get("email")
         if email is None:
             return None
         user = self.db.query(User).filter(User.email == email).first()
@@ -80,4 +80,5 @@ class AuthService:
     
     async def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email."""
-        return self.db.query(User).filter(User.email == email).first()
+        user =  self.db.query(User).filter(User.email == email).first()
+        return user

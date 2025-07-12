@@ -1,10 +1,39 @@
 venv/
 __pycache__/
 *.pyc
-
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.pid
+*.sock
+*.log
+*.env
+*.env.local
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+tmp/
+htmlcov/
+.coverage
+*.ipynb
+# Frontend
+node_modules/
+dist/
+build/
+lucid-interview-agent-main/dist/
+lucid-interview-agent-main/build/
+# Test artifacts
+test_submit_curl.sh
+tmp/*.wav
+tmp/*.json
+# Docker
+DockerFile
+# Alembic
+alembic/versions/*.pyc
+# Misc
+google_STT.json
 google_TTS.json
-google.STT.json
-
-# Environment variables
-ai_interviewer/.env
-ai_interviewer/ai_interviewer.db
+# Local configuration files
+test_submit_curl.sh

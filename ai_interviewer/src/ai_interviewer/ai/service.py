@@ -13,7 +13,7 @@ from ..utilities.Speech_to_text.stt_service import get_stt_service
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from .prompts import render_evalution_prompt
+from .prompts import evaluation_prompt
 
 try:
     from google.cloud import speech_v1p1beta1 as speech
@@ -180,28 +180,24 @@ class AIService:
                 print("Evaluating response with LLM...")
 
                 # Generate LLM prompt
-                prompt = render_evalution_prompt(
-                    question=question,
-                    user_response=user_response,
-                    expected_points=expected_points,
-                    evaluation_criteria=evaluation_criteria
-                )
+                json_output_parser = JsonOutputParser()
 
                 # Invoke LLM
-                result = await self.llm.ainvoke(prompt)
-                raw = result.content
+                chain = evaluation_prompt | self.llm | json_output_parser
+                result = await chain.ainvoke(
+                    {
+                        "question": question,
+                        "user_response": user_response,
+                        "expected_points_section": expected_points or [],
+                        "evaluation_criteria_section": evaluation_criteria or {}
 
-                print(f"LLM content type: {type(raw)}")
-                print("Raw LLM output:")
-                print(raw)
-
-                # Try to extract JSON from ```json ... ```
-                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-                cleaned_json_str = match.group(1) if match else raw
-
-                # Try parsing JSON
-                result_json = json.loads(cleaned_json_str)
-                return result_json
+                    }
+                )
+                
+                if(result):
+                    return result
+                else:
+                    print("⚠️ LLM evaluation returned empty result, falling back to rule-based evaluation...")
 
             except Exception as e:
                 print(f"⚠️ LLM evaluation failed: {e}")
@@ -902,5 +898,5 @@ class AIService:
 if __name__ == "__main__":
     # Example usage
     service = AIService()
-    questions = asyncio.run(service.generate_interview_question("Software Engineer", "technical", 'medium', 5, "google"))
+    questions = asyncio.run(service.evaluate_response("what is llm", "i don't know",["Hello"],{"1":2.3} ))
     print("Generated Questions:", questions)

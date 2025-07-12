@@ -60,17 +60,6 @@ evaluation_prompt = ChatPromptTemplate.from_messages([
    "- improvements: list of strings")
 ])
 
-def render_evalution_prompt(question, user_response, expected_points=None, evaluation_criteria=None):
-    expected_points_section = f"Expected Points: {expected_points}\n" if expected_points else ""
-    evaluation_criteria_section = f"Evaluation Criteria: {evaluation_criteria}\n" if evaluation_criteria else ""
-
-    return evaluation_prompt.format_messages(
-        question=question,
-        user_response=user_response,
-        expected_points_section=expected_points_section,
-        evaluation_criteria_section=evaluation_criteria_section
-    )
-
 followup_prompt = ChatPromptTemplate.from_messages([
       ("system", 
        "You are an expert interviewer. You will receive a previous interview question, the user's response, and additional context. "

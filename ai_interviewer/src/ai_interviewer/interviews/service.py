@@ -3,8 +3,9 @@ Interview business logic and LangGraph workflow integration
 """
 
 import uuid
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union,cast
 from datetime import datetime
+from sqlalchemy import DateTime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,8 @@ from ..ai.workflow import interview_workflow
 from ..auth.models import User
 from ..utilities import process_audio_data
 import base64
+from .models import InterviewSession
+
 
 
 def clean_workflow_state_for_db(workflow_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -125,19 +128,25 @@ class InterviewService:
                 # Update state to resume
                 state_dict = session.workflow_state or {}
                 print(f"Resuming session with state: {state_dict}")
-                state = LangGraphState(**state_dict)
+                # Ensure state_dict is a dict with string keys and required fields
+                required_fields = ["interview_id", "session_token", "current_step", "user_id", "interview_type", "position"]
+                if isinstance(state_dict, dict) and all(field in state_dict and state_dict[field] is not None for field in required_fields):
+                    state = LangGraphState(**{str(k): v for k, v in state_dict.items()})
+                else:
+                    raise HTTPException(status_code=500, detail="Workflow state is missing required fields or has invalid keys.")
             
             # Resume the interview through workflow
             state = await interview_workflow.resume_session(state)
             state = await interview_workflow.present_question(state)
             
             # Update session with new state
-            session.workflow_state = clean_workflow_state_for_db(state.model_dump())
-            session.session_status = "resumed"
-            self.db.commit()
+            if session:
+                session.workflow_state = clean_workflow_state_for_db(state.model_dump())
+                session.session_status = "resumed"
+                self.db.commit()
             
             return {
-                "session_token": session.session_token,
+                "session_token": session.session_token if session else None,
                 "first_question": state.current_question,
                 "audio_data": getattr(state, 'audio_response', None),
                 "workflow_state": state,
@@ -187,6 +196,7 @@ class InterviewService:
             user_id=user_id,
             interview_type=interview.interview_type,
             position=interview.position,
+            interview_duration=interview.duration_minutes,
             difficulty="medium"  # Default difficulty
         )
         
@@ -255,8 +265,6 @@ class InterviewService:
         else:
             raise HTTPException(status_code=500, detail="Workflow state is missing required fields.")
         
-        
-
         if audio_data:
             try:
                 # Use the new audio processor to handle both base64 strings and bytes
@@ -307,20 +315,17 @@ class InterviewService:
         
         # Update session with new state
         # Ensure no binary data is stored in workflow_state
-        
         state.audio_data = None  # Remove any binary audio before saving
         session.workflow_state = clean_workflow_state_for_db(state.model_dump())
         session.current_step = state.current_step
         session.last_activity_at = datetime.now()
-        
         self.db.commit()
         
         # Prepare response
         evaluation = state.ai_evaluation or {}
         next_question = getattr(state, 'current_question',None) if state.should_continue else None
-        
-        # Debug audio response
         audio_response = getattr(state, 'audio_response', None)
+
         return {
             "evaluation": {
                 "score": evaluation.get("overall_score", 0),

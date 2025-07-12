@@ -365,7 +365,7 @@ class InterviewWorkflow:
             # Don't increment question index for follow-ups
         else:
             # Move to next regular question
-            state.current_question_index += 1
+            state.current_question_index = state.current_question_index + 1
             print(f"Moving to next question index: {state.current_question_index}")
             state.is_follow_up = False
             

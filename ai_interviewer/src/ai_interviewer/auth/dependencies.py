@@ -40,7 +40,8 @@ async def get_current_user(
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+    print("IIIIIIII",type(user))
+    print("Current user:", user)
     return user
 
 
@@ -59,7 +60,7 @@ async def get_current_active_user(
     Raises:
         HTTPException: If user is not active
     """
-    if not current_user.is_active:
+    if not bool(current_user.is_active):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user"
